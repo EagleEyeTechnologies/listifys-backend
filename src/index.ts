@@ -20,7 +20,7 @@ async function main() {
   const server = http.createServer(app);
   initSocket(server);
 
-  server.listen(env.PORT, () => {
+  server.listen(env.PORT, "0.0.0.0", () => {
     logger.info(`listifys-api listening on :${env.PORT}`, {
       env: env.NODE_ENV,
       clientUrl: env.CLIENT_URL,

@@ -8,6 +8,7 @@ import { distanceMiles } from "../../utils/geo.js";
 import { indexListing, removeListingFromIndex } from "../search/search.service.js";
 import { enqueueListingSideEffect } from "../../queues/listingQueue.js";
 import { isMongoObjectId, listingSlugFrom } from "../../utils/slug.js";
+import { env } from "../../config/env.js";
 
 export const createListingSchema = z.object({
   title: z.string().min(3).max(200),
@@ -59,7 +60,8 @@ function normalizeImages(raw: unknown): string[] {
     return raw
       .flatMap((v) => normalizeImages(v))
       .map((s) => s.trim())
-      .filter(Boolean);
+      .filter(Boolean)
+      .map(absolutizeMediaUrl);
   }
   if (typeof raw === "string") {
     const trimmed = raw.trim();
@@ -68,11 +70,29 @@ function normalizeImages(raw: unknown): string[] {
       return trimmed
         .split(/\s+/)
         .map((s) => s.trim())
-        .filter((s) => /^https?:\/\//i.test(s) || s.startsWith("/"));
+        .filter((s) => /^https?:\/\//i.test(s) || s.startsWith("/"))
+        .map(absolutizeMediaUrl);
     }
-    return [trimmed];
+    return [absolutizeMediaUrl(trimmed)];
   }
   return [];
+}
+
+function absolutizeMediaUrl(url: string): string {
+  const v = url.trim();
+  if (!v) return v;
+  if (/^https?:\/\//i.test(v) || v.startsWith("data:") || v.startsWith("blob:")) {
+    return v;
+  }
+  if (v.startsWith("//")) return `https:${v}`;
+  const s3 = (env.AWS_S3_BUCKET_URL || "").replace(/\/$/, "");
+  if (s3 && !v.startsWith("/")) {
+    return `${s3}/${v.replace(/^\//, "")}`;
+  }
+  if (s3 && (v.startsWith("/uploads") || v.startsWith("/media"))) {
+    return `${s3}${v}`;
+  }
+  return v;
 }
 
 function listingPublicSlug(doc: InstanceType<typeof Listing>) {
