@@ -1,6 +1,13 @@
 import { config as loadDotenv } from "dotenv";
 import { z } from "zod";
 
+/** Prefer `.env.production` when NODE_ENV=production; never override host-injected env. */
+const nodeEnv = process.env.NODE_ENV || "development";
+if (nodeEnv === "production") {
+  loadDotenv({ path: ".env.production" });
+} else if (nodeEnv === "test") {
+  loadDotenv({ path: ".env.test" });
+}
 loadDotenv();
 
 const envSchema = z.object({
