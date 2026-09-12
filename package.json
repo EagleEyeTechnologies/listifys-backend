@@ -5,22 +5,22 @@
   "description": "Listifys Express + TypeScript API (v2)",
   "main": "dist/index.js",
   "scripts": {
-    "dev": "tsx watch src/index.ts",
-    "dev:worker": "tsx watch src/worker.ts",
+    "dev": "npx tsx watch src/index.ts",
+    "dev:worker": "npx tsx watch src/worker.ts",
     "build": "tsc -p tsconfig.json",
     "start": "node dist/index.js",
     "start:worker": "node dist/worker.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "tsc -p tsconfig.json --noEmit",
-    "seed": "tsx src/scripts/seed.ts",
-    "migrate:stub": "tsx src/scripts/migrate-listings.stub.ts",
-    "migrate:prod": "tsx src/scripts/migrate-production-to-newlistifysdb.ts",
-    "migrate:prod:write": "tsx src/scripts/migrate-production-to-newlistifysdb.ts --write",
-    "migrate:verify": "tsx src/scripts/verify-newlistifysdb.ts",
-    "chat:decrypt": "tsx src/scripts/backfill-chat-decrypt.ts",
-    "chat:decrypt:write": "tsx src/scripts/backfill-chat-decrypt.ts --write",
-    "slugs:backfill": "tsx src/scripts/backfill-slugs.ts",
-    "slugs:backfill:write": "tsx src/scripts/backfill-slugs.ts --write"
+    "seed": "npx tsx src/scripts/seed.ts",
+    "migrate:stub": "npx tsx src/scripts/migrate-listings.stub.ts",
+    "migrate:prod": "npx tsx src/scripts/migrate-production-to-newlistifysdb.ts",
+    "migrate:prod:write": "npx tsx src/scripts/migrate-production-to-newlistifysdb.ts --write",
+    "migrate:verify": "npx tsx src/scripts/verify-newlistifysdb.ts",
+    "chat:decrypt": "npx tsx src/scripts/backfill-chat-decrypt.ts",
+    "chat:decrypt:write": "npx tsx src/scripts/backfill-chat-decrypt.ts --write",
+    "slugs:backfill": "npx tsx src/scripts/backfill-slugs.ts",
+    "slugs:backfill:write": "npx tsx src/scripts/backfill-slugs.ts --write"
   },
   "engines": {
     "node": ">=20 <25"
@@ -52,11 +52,9 @@
     "jsonwebtoken": "^9.0.2",
     "mongoose": "^9.2.1",
     "socket.io": "^4.8.3",
+    "tsx": "^4.19.2",
     "typescript": "^5.9.3",
     "uuid": "^13.0.0",
     "zod": "^3.24.1"
-  },
-  "devDependencies": {
-    "tsx": "^4.19.2"
   }
 }
