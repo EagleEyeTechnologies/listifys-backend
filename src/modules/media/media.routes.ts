@@ -8,8 +8,24 @@ import { asyncHandler } from "../../utils/asyncHandler.js";
 import { requireAuth } from "../../middleware/auth.js";
 import { AppError } from "../../utils/AppError.js";
 import { s3Configured } from "./s3.js";
+import { absolutizeMediaUrl } from "../../utils/mediaUrl.js";
 
 export const mediaRouter = Router();
+export const legacyImagesRouter = Router();
+
+/** Old backend served photos at /api/images/:key — redirect to public S3. */
+legacyImagesRouter.use((req, res) => {
+  const key = String(req.path || "").replace(/^\/+/, "");
+  const dest = absolutizeMediaUrl(key);
+  if (!key || !/^https?:\/\//i.test(dest)) {
+    res.status(404).json({
+      success: false,
+      error: { code: "NOT_FOUND", message: "Image not found" },
+    });
+    return;
+  }
+  res.redirect(302, dest);
+});
 
 const presignSchema = z.object({
   contentType: z.string().min(3).max(100),

@@ -8,7 +8,7 @@ import { distanceMiles } from "../../utils/geo.js";
 import { indexListing, removeListingFromIndex } from "../search/search.service.js";
 import { enqueueListingSideEffect } from "../../queues/listingQueue.js";
 import { isMongoObjectId, listingSlugFrom } from "../../utils/slug.js";
-import { env } from "../../config/env.js";
+import { absolutizeMediaUrl } from "../../utils/mediaUrl.js";
 
 export const createListingSchema = z.object({
   title: z.string().min(3).max(200),
@@ -78,23 +78,6 @@ function normalizeImages(raw: unknown): string[] {
   return [];
 }
 
-function absolutizeMediaUrl(url: string): string {
-  const v = url.trim();
-  if (!v) return v;
-  if (/^https?:\/\//i.test(v) || v.startsWith("data:") || v.startsWith("blob:")) {
-    return v;
-  }
-  if (v.startsWith("//")) return `https:${v}`;
-  const s3 = (env.AWS_S3_BUCKET_URL || "").replace(/\/$/, "");
-  if (s3 && !v.startsWith("/")) {
-    return `${s3}/${v.replace(/^\//, "")}`;
-  }
-  if (s3 && (v.startsWith("/uploads") || v.startsWith("/media"))) {
-    return `${s3}${v}`;
-  }
-  return v;
-}
-
 function listingPublicSlug(doc: InstanceType<typeof Listing>) {
   if (doc.slug) return doc.slug;
   const generated = listingSlugFrom(doc.title, doc._id.toString());
@@ -129,7 +112,7 @@ function toPublic(doc: InstanceType<typeof Listing>) {
     lng: coords?.[0],
     sellerId,
     sellerName: obj.sellerName,
-    sellerAvatar: obj.sellerAvatar,
+    sellerAvatar: absolutizeMediaUrl(obj.sellerAvatar),
     status: obj.status,
     featured: obj.featured,
     views: obj.views,
@@ -204,6 +187,20 @@ export async function getListingById(idOrSlug: string) {
   }
   listing.views = (listing.views || 0) + 1;
   if (!listing.slug) listing.slug = listingSlugFrom(listing.title, listing._id.toString());
+
+  // Prefer live seller avatar/name (denormalized fields can be stale/empty)
+  const seller = await User.findById(listing.seller)
+    .select("avatar name")
+    .lean();
+  if (seller) {
+    if (seller.avatar) {
+      listing.sellerAvatar = seller.avatar;
+    }
+    if (seller.name) {
+      listing.sellerName = seller.name;
+    }
+  }
+
   await listing.save();
   return toPublic(listing);
 }

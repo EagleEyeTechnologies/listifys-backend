@@ -6,6 +6,8 @@ import { publicPremiumStatus } from "../premium/premium.service.js";
 import { getSellerReviewStats } from "../reviews/reviews.service.js";
 import { isMongoObjectId, sellerSlugFrom } from "../../utils/slug.js";
 import { issueOtp, verifyOtp } from "../auth/otp.js";
+import { absolutizeMediaUrl } from "../../utils/mediaUrl.js";
+import { displayEmail } from "../../utils/phone.js";
 
 export const updateMeSchema = z
   .object({
@@ -58,15 +60,16 @@ function userPublicSlug(user: InstanceType<typeof User>) {
 }
 
 export function toMeUser(user: InstanceType<typeof User>) {
+  const emailShown = displayEmail(user.email);
   return {
     id: user._id.toString(),
     slug: userPublicSlug(user),
-    email: user.email || null,
+    email: emailShown === "—" ? null : emailShown,
     phone: user.phone || null,
     phoneCode: user.phoneCode || null,
     name: user.name || "",
-    avatar: user.avatar || "",
-    banner: user.banner || "",
+    avatar: absolutizeMediaUrl(user.avatar),
+    banner: absolutizeMediaUrl(user.banner),
     bio: user.bio || "",
     location: user.location || "",
     gender: user.gender || "",
@@ -104,8 +107,8 @@ export async function toPublicUser(
     id,
     slug,
     name: user.name || "",
-    avatar: user.avatar || "",
-    banner: user.banner || "",
+    avatar: absolutizeMediaUrl(user.avatar),
+    banner: absolutizeMediaUrl(user.banner),
     bio: user.bio || "",
     location: user.location || "",
     countryCode: user.countryCode || "IN",
@@ -182,7 +185,7 @@ export async function getPublicSellerProfile(
     id,
     slug: stubSlug,
     name: sample.sellerName || "Seller",
-    avatar: sample.sellerAvatar || "",
+    avatar: absolutizeMediaUrl(sample.sellerAvatar),
     banner: "",
     bio: "",
     location: sample.city || sample.location || "",
@@ -315,7 +318,7 @@ async function personFromUser(
     id,
     slug,
     name: user.name || "User",
-    avatar: user.avatar || "",
+    avatar: absolutizeMediaUrl(user.avatar),
     location: user.location || user.countryCode || "",
     listingCount,
     rating: stats.averageRating,

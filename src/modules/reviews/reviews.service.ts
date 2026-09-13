@@ -4,6 +4,7 @@ import { SellerReview } from "./sellerReview.model.js";
 import { User } from "../users/user.model.js";
 import { Listing } from "../listings/listing.model.js";
 import { AppError } from "../../utils/AppError.js";
+import { absolutizeMediaUrl } from "../../utils/mediaUrl.js";
 
 export async function getSellerReviewStats(sellerId: string) {
   if (!mongoose.isValidObjectId(sellerId)) {
@@ -40,7 +41,7 @@ export function serializeReview(
     sellerId: doc.seller.toString(),
     reviewerId: doc.reviewer.toString(),
     reviewerName: reviewer?.name || "Buyer",
-    reviewerAvatar: reviewer?.avatar || "",
+    reviewerAvatar: absolutizeMediaUrl(reviewer?.avatar),
     listingId: doc.listing ? doc.listing.toString() : null,
     listingCategory: doc.listingCategory || "",
     rating: doc.rating,

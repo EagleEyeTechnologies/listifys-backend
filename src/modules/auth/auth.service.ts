@@ -11,6 +11,8 @@ import {
   verifyRefreshToken,
 } from "./tokens.js";
 import { AppError } from "../../utils/AppError.js";
+import { absolutizeMediaUrl } from "../../utils/mediaUrl.js";
+import { displayEmail, normalizePhoneParts } from "../../utils/phone.js";
 import type { CountryCode } from "../../types/domain.js";
 import {
   verifyAppleIdentityToken,
@@ -81,13 +83,14 @@ function publicUser(user: {
   avatar?: string | null;
   countryCode?: CountryCode;
 }) {
+  const emailShown = displayEmail(user.email);
   return {
     id: user._id.toString(),
-    email: user.email || null,
+    email: emailShown === "—" ? null : emailShown,
     phone: user.phone || null,
     phoneCode: user.phoneCode || null,
     name: user.name || "",
-    avatar: user.avatar || "",
+    avatar: absolutizeMediaUrl(user.avatar),
     countryCode: user.countryCode || "IN",
   };
 }
@@ -236,20 +239,33 @@ export async function verifyPhoneOtp(input: z.infer<typeof phoneVerifySchema>) {
   const target = `${input.phoneCode}:${input.phone}`;
   await verifyOtp("phone", target, input.code);
 
-  let user = await User.findOne({ phone: input.phone });
+  const parts = normalizePhoneParts(input.phoneCode, input.phone);
+  const phoneCode = parts.phoneCode || input.phoneCode;
+  const phone = parts.phone || input.phone;
+
+  let user =
+    (await User.findOne({ phone, phoneCode })) ||
+    (await User.findOne({ phone: input.phone })) ||
+    (await User.findOne({ phone: `${phoneCode}${phone}` })) ||
+    (await User.findOne({ phone: `+${phoneCode.replace("+", "")}${phone}` }));
+
   if (!user) {
     user = await User.create({
-      phone: input.phone,
-      phoneCode: input.phoneCode,
-      name: input.name || `User ${input.phone.slice(-4)}`,
+      phone,
+      phoneCode,
+      name: input.name || `User ${phone.slice(-4)}`,
       countryCode: input.countryCode || "IN",
-      providers: [{ provider: "phone", providerId: target }],
+      providers: [{ provider: "phone", providerId: `${phoneCode}:${phone}` }],
     });
   } else {
     if (!user.providers?.some((p) => p.provider === "phone")) {
-      user.providers.push({ provider: "phone", providerId: target });
+      user.providers.push({
+        provider: "phone",
+        providerId: `${phoneCode}:${phone}`,
+      });
     }
-    user.phoneCode = input.phoneCode;
+    user.phone = phone;
+    user.phoneCode = phoneCode;
     if (input.name && !user.name) user.name = input.name;
     if (input.countryCode) user.countryCode = input.countryCode;
     await user.save();

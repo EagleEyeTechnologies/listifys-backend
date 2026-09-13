@@ -27,6 +27,11 @@ const envSchema = z.object({
   CLIENT_URL: z.string().default("http://localhost:3000"),
   /** Extra comma-separated browser origins allowed for CORS (production). */
   CORS_ORIGINS: z.string().optional(),
+  /**
+   * Comma-separated emails allowed to access `/api/admin/*`.
+   * Must match marketplace User.email (same login credentials as website).
+   */
+  ADMIN_EMAILS: z.string().optional(),
   DEFAULT_COUNTRY_CODE: z.enum(["US", "CA", "IN"]).default("IN"),
   ELASTICSEARCH_URL: z.string().optional(),
   ELASTIC_USERNAME: z.string().optional(),
@@ -130,3 +135,16 @@ function parseEnv(): Env {
 }
 
 export const env = parseEnv();
+
+/** Normalized admin allowlist from ADMIN_EMAILS. */
+export function getAdminEmails(): string[] {
+  return (env.ADMIN_EMAILS || "")
+    .split(",")
+    .map((s) => s.trim().toLowerCase())
+    .filter(Boolean);
+}
+
+export function isAdminEmail(email: string | null | undefined): boolean {
+  if (!email) return false;
+  return getAdminEmails().includes(email.trim().toLowerCase());
+}

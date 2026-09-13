@@ -19,6 +19,7 @@
  *     npm run migrate:prod -- --write
  *
  *   npm run migrate:prod -- --write --collections=users,listings
+ *   npm run migrate:prod -- --write --collections=addresses
  *   npm run migrate:prod -- --write --collections=sellerreviews
  *   npm run migrate:prod -- --write --limit=50
  */
@@ -29,24 +30,66 @@ import { writeFileSync, mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { logger } from "../utils/logger.js";
 
-const WRITE = process.argv.includes("--write");
+function argvTokens(): string[] {
+  const fromProcess = process.argv.slice(2);
+  const fromNpm: string[] = [];
+  // When someone runs `npm run migrate:prod --write`, npm sets npm_config_write
+  // and may not forward --write to the script. Also parse npm_config_argv.remain.
+  try {
+    const npmArgv = JSON.parse(process.env.npm_config_argv || "{}") as {
+      remain?: string[];
+      original?: string[];
+    };
+    if (Array.isArray(npmArgv.remain)) fromNpm.push(...npmArgv.remain);
+    if (Array.isArray(npmArgv.original)) fromNpm.push(...npmArgv.original);
+  } catch {
+    /* ignore */
+  }
+  if (process.env.npm_config_write === "true") fromNpm.push("--write");
+  if (process.env.MIGRATE_WRITE === "1") fromNpm.push("--write");
+  const collectionsEnv =
+    process.env.npm_config_collections || process.env.MIGRATE_COLLECTIONS;
+  if (collectionsEnv) fromNpm.push(`--collections=${collectionsEnv}`);
+  return [...fromProcess, ...fromNpm];
+}
+
+const ARGV = argvTokens();
+
+function hasFlag(name: string) {
+  return ARGV.some((a) => a === name || a.startsWith(`${name}=`));
+}
+
+function getOpt(name: string): string | null {
+  const eq = ARGV.find((a) => a.startsWith(`${name}=`));
+  if (eq) return eq.slice(name.length + 1);
+  const i = ARGV.indexOf(name);
+  if (i >= 0 && ARGV[i + 1] && !ARGV[i + 1]!.startsWith("-")) {
+    return ARGV[i + 1]!;
+  }
+  return null;
+}
+
+const WRITE = hasFlag("--write") || hasFlag("-w");
 const DRY_RUN = !WRITE;
 const BATCH = Number(process.env.MIGRATE_BATCH_SIZE || 200);
 const LIMIT = (() => {
-  const arg = process.argv.find((a) => a.startsWith("--limit="));
-  return arg ? Number(arg.split("=")[1]) : 0;
+  const raw = getOpt("--limit");
+  return raw ? Number(raw) : 0;
 })();
 const ONLY = (() => {
-  const arg = process.argv.find((a) => a.startsWith("--collections="));
-  if (!arg) return null as Set<string> | null;
+  const raw = getOpt("--collections");
+  if (!raw) return null as Set<string> | null;
   return new Set(
-    arg
-      .split("=")[1]
+    raw
       .split(",")
       .map((s) => s.trim().toLowerCase())
       .filter(Boolean),
   );
 })();
+
+console.log(
+  `[migrate] argv=${JSON.stringify(ARGV)} write=${WRITE} only=${ONLY ? [...ONLY].join(",") : "(all)"}`,
+);
 
 const FORBIDDEN_TARGET_NAMES = new Set(["production", "admin", "local"]);
 
@@ -481,14 +524,82 @@ function transformUser(doc: Document, savedIds: string[]): Document {
   };
 
   const email = doc.email ? String(doc.email).toLowerCase().trim() : "";
-  const phone = doc.phone ? String(doc.phone).trim() : "";
+  const rawPhone = doc.phone ? String(doc.phone).trim() : "";
+  const rawCode = doc.phoneCode ? String(doc.phoneCode).trim() : "";
   if (email) out.email = email;
-  if (phone) out.phone = phone;
-  if (doc.phoneCode) out.phoneCode = String(doc.phoneCode);
+  if (rawPhone || rawCode) {
+    // Keep national digits in phone + dial code in phoneCode when possible
+    const digits = rawPhone.replace(/\D/g, "");
+    if (rawPhone.startsWith("+91") || (digits.length === 12 && digits.startsWith("91"))) {
+      out.phoneCode = "+91";
+      out.phone = digits.slice(-10);
+    } else if (rawCode) {
+      out.phoneCode = rawCode.startsWith("+") ? rawCode : `+${rawCode.replace(/\D/g, "")}`;
+      out.phone = digits.length > 10 && digits.startsWith("91") ? digits.slice(-10) : digits || rawPhone;
+    } else {
+      out.phone = rawPhone;
+    }
+  }
+
+  const location =
+    (doc.address && String(doc.address).trim()) ||
+    (doc.location && typeof doc.location === "string" && doc.location.trim()) ||
+    (doc.location && typeof doc.location === "object"
+      ? String(
+          (doc.location as Document).address ||
+            (doc.location as Document).city ||
+            "",
+        ).trim()
+      : "") ||
+    "";
+  if (location) out.location = location;
+
   if (doc.password || doc.passwordHash) {
     out.passwordHash = doc.password || doc.passwordHash;
   }
 
+  return out;
+}
+
+function transformAddress(doc: Document): Document | null {
+  if (!doc.user || !doc.formattedAddress) return null;
+  const coords = doc.coordinates?.coordinates;
+  const out: Document = {
+    _id: doc._id,
+    user: doc.user,
+    label: String(doc.label || "Other").trim() || "Other",
+    receiverName: String(doc.receiverName || "").trim(),
+    phone: String(doc.phone || "").trim(),
+    houseNumber: String(doc.houseNumber || "").trim(),
+    buildingName: String(doc.buildingName || "").trim(),
+    floor: String(doc.floor || "").trim(),
+    street: String(doc.street || "").trim(),
+    landmark: String(doc.landmark || "").trim(),
+    city: String(doc.city || "").trim(),
+    state: String(doc.state || "").trim(),
+    pincode: String(doc.pincode || "").trim(),
+    formattedAddress: String(doc.formattedAddress).trim(),
+    placeId: String(doc.placeId || "").trim(),
+    deliveryInstructions: String(doc.deliveryInstructions || "").trim(),
+    isDefault: Boolean(doc.isDefault),
+    createdAt: doc.createdAt || new Date(),
+    updatedAt: doc.updatedAt || new Date(),
+    _migrationMeta: {
+      sourceDb: "production",
+      migratedAt: new Date(),
+    },
+  };
+  if (
+    Array.isArray(coords) &&
+    coords.length === 2 &&
+    Number.isFinite(Number(coords[0])) &&
+    Number.isFinite(Number(coords[1]))
+  ) {
+    out.coordinates = {
+      type: "Point",
+      coordinates: [Number(coords[0]), Number(coords[1])],
+    };
+  }
   return out;
 }
 
@@ -771,16 +882,13 @@ async function main() {
     process.exit(1);
   }
 
-  // Same-cluster convenience: derive target URI by swapping DB name
+  // Always pin DB path from SOURCE_DB_NAME / TARGET_DB_NAME
+  // (defaults: production → newlistifysdb). Avoids treating MONGODB_URI's
+  // /newlistifysdb path as both source and target.
+  sourceUri = withDbName(sourceUri, sourceDbName);
   if (!targetUri) {
     targetUri = withDbName(sourceUri, targetDbName);
-  }
-
-  // Force DB names even if path already set
-  if (process.env.SOURCE_DB_NAME || !dbNameFromUri(sourceUri)) {
-    sourceUri = withDbName(sourceUri, sourceDbName);
-  }
-  if (process.env.TARGET_DB_NAME || !dbNameFromUri(targetUri)) {
+  } else {
     targetUri = withDbName(targetUri, targetDbName);
   }
 
@@ -849,6 +957,67 @@ async function main() {
       },
       stats,
     );
+  }
+
+  // 2b) Saved places (Home / Work / College, etc.)
+  if (want("addresses")) {
+    const stats = mk("addresses");
+    await streamTransform(
+      source,
+      target,
+      "addresses",
+      "addresses",
+      (doc) => transformAddress(doc),
+      stats,
+    );
+
+    // Backfill user.location from default / newest address when empty
+    if (!DRY_RUN) {
+      const defaults = await target
+        .collection("addresses")
+        .aggregate<{
+          _id: ObjectId;
+          label?: string;
+          city?: string;
+          formattedAddress?: string;
+        }>([
+          { $sort: { isDefault: -1, updatedAt: -1 } },
+          {
+            $group: {
+              _id: "$user",
+              label: { $first: "$label" },
+              city: { $first: "$city" },
+              formattedAddress: { $first: "$formattedAddress" },
+            },
+          },
+        ])
+        .toArray();
+      const ops = defaults.map((a) => {
+        const loc =
+          (a.label && a.city && `${a.label} · ${a.city}`) ||
+          a.city ||
+          a.formattedAddress ||
+          "";
+        return {
+          updateOne: {
+            filter: {
+              _id: a._id,
+              $or: [
+                { location: { $exists: false } },
+                { location: "" },
+                { location: null },
+              ],
+            },
+            update: { $set: { location: loc } },
+          },
+        };
+      }).filter((op) => op.updateOne.update.$set.location);
+      for (let i = 0; i < ops.length; i += BATCH) {
+        await target
+          .collection("users")
+          .bulkWrite(ops.slice(i, i + BATCH), { ordered: false });
+      }
+    }
   }
 
   // 3) Listings (unified)

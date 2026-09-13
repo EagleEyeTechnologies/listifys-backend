@@ -9,6 +9,7 @@ import { listingHrefFromDoc } from "./listingHref.js";
 import { decryptChatText } from "./chat.crypto.js";
 import { createNotification } from "../notifications/notification.service.js";
 import { isUserOnline } from "./presence.js";
+import { absolutizeMediaUrl } from "../../utils/mediaUrl.js";
 
 export const startConversationSchema = z.object({
   recipientId: z.string().min(1),
@@ -90,7 +91,7 @@ export async function listConversations(userId: string) {
     return {
       id: c._id.toString(),
       name: other?.name || "User",
-      avatar: other?.avatar || "",
+      avatar: absolutizeMediaUrl(other?.avatar),
       online: otherId ? isUserOnline(otherId) : false,
       verified: false,
       lastMessage: decryptChatText(c.lastMessageText || ""),
@@ -102,9 +103,7 @@ export async function listConversations(userId: string) {
           c.listingPrice != null && Number(c.listingPrice) > 0
             ? `₹${Number(c.listingPrice).toLocaleString("en-IN")}`
             : "",
-        image:
-          c.listingImage ||
-          "",
+        image: absolutizeMediaUrl(c.listingImage),
         href: sanitizeListingHref(c.listingHref),
       },
       participantId: otherId,
@@ -193,7 +192,7 @@ export async function sendMessage(
       title: `New message from ${sender?.name || "Someone"}`,
       body: text.slice(0, 140),
       href: `/messages?c=${conversation._id.toString()}`,
-      image: sender?.avatar || "",
+      image: absolutizeMediaUrl(sender?.avatar),
     });
   }
 

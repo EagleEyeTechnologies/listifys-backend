@@ -11,7 +11,7 @@ import { globalRateLimit } from "./middleware/rateLimit.js";
 import { healthRouter } from "./modules/health/health.routes.js";
 import { authRouter } from "./modules/auth/auth.routes.js";
 import { listingsRouter } from "./modules/listings/listing.routes.js";
-import { mediaRouter } from "./modules/media/media.routes.js";
+import { legacyImagesRouter, mediaRouter } from "./modules/media/media.routes.js";
 import { usersRouter } from "./modules/users/users.routes.js";
 import { savedRouter } from "./modules/saved/saved.routes.js";
 import { compareRouter } from "./modules/compare/compare.routes.js";
@@ -25,6 +25,9 @@ import { premiumRouter } from "./modules/premium/premium.routes.js";
 import { eventTicketsRouter } from "./modules/event-tickets/eventTickets.routes.js";
 import { reviewsRouter } from "./modules/reviews/reviews.routes.js";
 import { offersRouter } from "./modules/offers/offers.routes.js";
+import { reportsRouter } from "./modules/admin/reports.routes.js";
+import { appPublicRouter } from "./modules/admin/app.routes.js";
+import { adminRouter } from "./modules/admin/admin.routes.js";
 import { logger } from "./utils/logger.js";
 
 export function createApp() {
@@ -76,6 +79,7 @@ export function createApp() {
   app.use("/api/chat", chatRouter);
   app.use("/api/notifications", notificationsRouter);
   app.use("/api/media", mediaRouter);
+  app.use("/api/images", legacyImagesRouter);
   app.use("/api/places", placesRouter);
   app.use("/api/boost", boostRouter);
   app.use("/api/premium", premiumRouter);
@@ -83,6 +87,9 @@ export function createApp() {
   app.use("/api/seller-reviews", reviewsRouter);
   app.use("/api/offers", offersRouter);
   app.use("/api/payments", paymentsRouter);
+  app.use("/api/reports", reportsRouter);
+  app.use("/api/app", appPublicRouter);
+  app.use("/api/admin", adminRouter);
 
   app.use((_req, res) => {
     res.status(404).json({

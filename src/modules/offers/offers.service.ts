@@ -6,6 +6,7 @@ import { User } from "../users/user.model.js";
 import { AppError } from "../../utils/AppError.js";
 import { listingHrefFromDoc } from "../chat/listingHref.js";
 import { createNotification } from "../notifications/notification.service.js";
+import { absolutizeMediaUrl } from "../../utils/mediaUrl.js";
 
 export const createOfferSchema = z.object({
   listingId: z.string().min(1),
@@ -45,14 +46,14 @@ async function serialize(
     id: doc._id.toString(),
     listingId: doc.listing.toString(),
     listingTitle: doc.listingTitle,
-    listingImage: doc.listingImage,
+    listingImage: absolutizeMediaUrl(doc.listingImage),
     listingHref: doc.listingHref,
     buyerId: doc.buyer.toString(),
     sellerId: doc.seller.toString(),
     buyerName: buyer?.name || "Buyer",
-    buyerAvatar: buyer?.avatar || "",
+    buyerAvatar: absolutizeMediaUrl(buyer?.avatar),
     sellerName: seller?.name || "Seller",
-    sellerAvatar: seller?.avatar || "",
+    sellerAvatar: absolutizeMediaUrl(seller?.avatar),
     offerPrice: doc.counterAmount || doc.amount,
     listPrice: doc.listPrice,
     currency: doc.currency,
@@ -110,7 +111,7 @@ export async function createOffer(
     title: `New offer on ${listing.title}`,
     body: `${buyer?.name || "Someone"} offered ${listing.currency} ${input.amount}`,
     href: "/profile?tab=offers",
-    image: listing.images?.[0] || buyer?.avatar || "",
+    image: absolutizeMediaUrl(listing.images?.[0] || buyer?.avatar || ""),
   });
 
   return serialize(offer, buyerId);
