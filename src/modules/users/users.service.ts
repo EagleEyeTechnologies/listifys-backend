@@ -7,7 +7,7 @@ import { getSellerReviewStats } from "../reviews/reviews.service.js";
 import { isMongoObjectId, sellerSlugFrom } from "../../utils/slug.js";
 import { issueOtp, verifyOtp } from "../auth/otp.js";
 import { absolutizeMediaUrl } from "../../utils/mediaUrl.js";
-import { displayEmail } from "../../utils/phone.js";
+import { displayEmail, isApplePrivateRelayEmail } from "../../utils/phone.js";
 
 export const updateMeSchema = z
   .object({
@@ -234,6 +234,13 @@ export async function updateMe(
 
 export async function requestEmailChange(userId: string, emailRaw: string) {
   const email = emailRaw.trim().toLowerCase();
+  if (isApplePrivateRelayEmail(email)) {
+    throw new AppError(
+      400,
+      "Please use your personal email address, not an Apple Hide My Email address.",
+      "PRIVATE_EMAIL_NOT_ALLOWED",
+    );
+  }
   const taken = await User.findOne({ email, _id: { $ne: userId } });
   if (taken) {
     throw new AppError(409, "Email already in use", "EMAIL_EXISTS");

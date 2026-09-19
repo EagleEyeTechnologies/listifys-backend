@@ -12,7 +12,7 @@ import {
 } from "./tokens.js";
 import { AppError } from "../../utils/AppError.js";
 import { absolutizeMediaUrl } from "../../utils/mediaUrl.js";
-import { displayEmail, normalizePhoneParts } from "../../utils/phone.js";
+import { displayEmail, isApplePrivateRelayEmail, needsPublicEmail, normalizePhoneParts } from "../../utils/phone.js";
 import type { CountryCode } from "../../types/domain.js";
 import {
   verifyAppleIdentityToken,
@@ -384,14 +384,12 @@ export async function socialLogin(
     if (input.countryCode) user.countryCode = input.countryCode;
     await user.save();
   } else {
-    const email = identity.email || input.email?.trim().toLowerCase();
-    if (!email) {
-      throw new AppError(
-        400,
-        "Apple did not provide an email. Use another sign-in method or grant email access.",
-        "APPLE_EMAIL_REQUIRED",
-      );
-    }
+    // Prefer Apple-provided email (public or Hide My Email relay). Client will
+    // prompt for a real inbox when the address is a private relay.
+    const email =
+      identity.email ||
+      input.email?.trim().toLowerCase() ||
+      `apple.${identity.appleId}@users.listifys.app`;
     user = await User.create({
       email,
       name: displayName,
@@ -401,5 +399,10 @@ export async function socialLogin(
   }
 
   const tokens = await tokensFor(user._id.toString());
-  return { user: publicUser(user), ...tokens };
+  return {
+    user: publicUser(user),
+    ...tokens,
+    needsEmail: needsPublicEmail(user.email),
+    isPrivateEmail: isApplePrivateRelayEmail(user.email),
+  };
 }

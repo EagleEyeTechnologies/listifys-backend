@@ -6,6 +6,7 @@ import { User } from "../users/user.model.js";
 import { createNotification } from "../notifications/notification.service.js";
 import { AppError } from "../../utils/AppError.js";
 import { logger } from "../../utils/logger.js";
+import { absolutizeMediaUrl } from "../../utils/mediaUrl.js";
 import type { CountryCode } from "../../types/domain.js";
 
 function currencySymbol(iso: string) {
@@ -140,7 +141,15 @@ async function confirmBooking(
   return booking;
 }
 
-export function serializeBooking(doc: InstanceType<typeof EventBooking>) {
+export function serializeBooking(
+  doc: InstanceType<typeof EventBooking>,
+  extras?: {
+    eventImage?: string;
+    venue?: string;
+    eventDate?: string;
+    eventTime?: string;
+  },
+) {
   return {
     id: doc._id.toString(),
     listingId: doc.listingId.toString(),
@@ -157,10 +166,42 @@ export function serializeBooking(doc: InstanceType<typeof EventBooking>) {
     attendeePhone: doc.attendeePhone,
     notes: doc.notes,
     eventTitle: doc.eventTitle,
+    eventImage: extras?.eventImage || "",
+    venue: extras?.venue || "",
+    eventDate: extras?.eventDate || "",
+    eventTime: extras?.eventTime || "",
     status: doc.status,
     isFree: doc.isFree,
     confirmedAt: doc.confirmedAt?.toISOString?.() || null,
   };
+}
+
+async function enrichBooking(doc: InstanceType<typeof EventBooking>) {
+  const listing = await Listing.findById(doc.listingId)
+    .select("images title location venue extras")
+    .lean();
+  const event =
+    listing?.extras &&
+    typeof listing.extras === "object" &&
+    (listing.extras as { event?: Record<string, unknown> }).event
+      ? ((listing.extras as { event: Record<string, unknown> }).event as Record<
+          string,
+          unknown
+        >)
+      : {};
+  return serializeBooking(doc, {
+    eventImage: absolutizeMediaUrl(
+      Array.isArray(listing?.images) ? String(listing.images[0] || "") : "",
+    ),
+    venue: String(
+      event.venue ||
+        (listing as { venue?: string } | null)?.venue ||
+        listing?.location ||
+        "",
+    ),
+    eventDate: event.date ? String(event.date) : event.eventDate ? String(event.eventDate) : "",
+    eventTime: event.time ? String(event.time) : event.eventTime ? String(event.eventTime) : "",
+  });
 }
 
 export async function confirmFreeBooking(input: {
@@ -372,7 +413,7 @@ export async function getMyBookings(userId: string) {
   const rows = await EventBooking.find({ userId })
     .sort({ createdAt: -1 })
     .limit(50);
-  return rows.map(serializeBooking);
+  return Promise.all(rows.map((row) => enrichBooking(row)));
 }
 
 export async function getBookingForUser(bookingId: string, userId: string) {
@@ -387,7 +428,7 @@ export async function getBookingForUser(bookingId: string, userId: string) {
   ) {
     throw new AppError(403, "Not allowed to view this booking", "FORBIDDEN");
   }
-  return serializeBooking(booking);
+  return enrichBooking(booking);
 }
 
 export async function getOrganizerBookings(listingId: string, userId: string) {
@@ -410,5 +451,83 @@ export async function getOrganizerBookings(listingId: string, userId: string) {
   })
     .sort({ createdAt: -1 })
     .limit(200);
-  return rows.map(serializeBooking);
+  return Promise.all(rows.map((row) => enrichBooking(row)));
+}
+
+export async function requestBookingWithdrawal(input: {
+  userId: string;
+  bookingId: string;
+  reason?: string;
+}) {
+  if (!mongoose.isValidObjectId(input.bookingId)) {
+    throw new AppError(400, "Invalid booking id", "VALIDATION_ERROR");
+  }
+  const booking = await EventBooking.findById(input.bookingId);
+  if (!booking || booking.userId.toString() !== input.userId) {
+    throw new AppError(404, "Booking not found", "NOT_FOUND");
+  }
+  if (!["confirmed", "withdraw_requested"].includes(booking.status)) {
+    throw new AppError(
+      400,
+      "This booking cannot be withdrawn",
+      "VALIDATION_ERROR",
+    );
+  }
+  if (booking.status === "withdraw_requested") {
+    return enrichBooking(booking);
+  }
+
+  const listing = await Listing.findById(booking.listingId);
+  const isFree = booking.isFree || Number(booking.totalAmount) <= 0;
+  booking.status = isFree ? "cancelled" : "withdraw_requested";
+  booking.cancelledAt = new Date();
+  booking.metadata = {
+    ...(booking.metadata && typeof booking.metadata === "object"
+      ? (booking.metadata as Record<string, unknown>)
+      : {}),
+    withdrawReason: String(input.reason || "").trim(),
+    withdrawRequestedAt: new Date().toISOString(),
+  };
+  await booking.save();
+
+  if (listing && booking.ticketQuantity > 0) {
+    await Listing.findByIdAndUpdate(listing._id, {
+      $inc: { "extras.event.ticketsAvailable": booking.ticketQuantity },
+    });
+  }
+
+  const title = listing?.title || booking.eventTitle || "the event";
+  const qty = booking.ticketQuantity;
+  const image = absolutizeMediaUrl(
+    Array.isArray(listing?.images) ? String(listing.images[0] || "") : "",
+  );
+
+  try {
+    if (booking.sellerId.toString() !== booking.userId.toString()) {
+      await createNotification({
+        userId: booking.sellerId.toString(),
+        type: "listing",
+        title: "Ticket withdrawal request",
+        body: `${booking.attendeeName || "A guest"} requested withdrawal of ${qty} ticket${qty === 1 ? "" : "s"} for "${title}".`,
+        href: `/events/${booking.listingId.toString()}`,
+        image,
+      });
+    }
+    await createNotification({
+      userId: booking.userId.toString(),
+      type: "listing",
+      title: isFree ? "Tickets cancelled" : "Withdrawal requested",
+      body: isFree
+        ? `Your tickets for "${title}" were cancelled.`
+        : `Your withdrawal request for "${title}" was sent to the organizer.`,
+      href: `/event-tickets/${booking._id.toString()}`,
+      image,
+    });
+  } catch (err) {
+    logger.warn("Withdrawal notification failed", {
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+
+  return enrichBooking(booking);
 }

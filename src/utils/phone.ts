@@ -86,6 +86,17 @@ export function isSyntheticEmail(email?: string | null): boolean {
   );
 }
 
+/** Apple "Hide My Email" relay addresses — treat as private, prompt for a real inbox. */
+export function isApplePrivateRelayEmail(email?: string | null): boolean {
+  if (!email) return false;
+  return /@privaterelay\.appleid\.com$/i.test(email.trim());
+}
+
+export function needsPublicEmail(email?: string | null): boolean {
+  if (!email?.trim()) return true;
+  return isSyntheticEmail(email) || isApplePrivateRelayEmail(email);
+}
+
 export function displayEmail(email?: string | null): string {
   if (!email?.trim() || isSyntheticEmail(email)) return "—";
   return email.trim();

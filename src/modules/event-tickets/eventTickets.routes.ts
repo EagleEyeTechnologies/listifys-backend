@@ -11,6 +11,7 @@ import {
   getBookingForUser,
   getMyBookings,
   getOrganizerBookings,
+  requestBookingWithdrawal,
   serializeBooking,
 } from "./eventTickets.service.js";
 import {
@@ -50,6 +51,24 @@ eventTicketsRouter.get(
       String(req.userId),
     );
     res.json({ success: true, data: booking });
+  }),
+);
+
+eventTicketsRouter.post(
+  "/my-bookings/:bookingId/withdraw",
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const booking = await requestBookingWithdrawal({
+      userId: String(req.userId),
+      bookingId: String(req.params.bookingId),
+      reason:
+        typeof req.body?.reason === "string" ? req.body.reason : undefined,
+    });
+    res.json({
+      success: true,
+      message: "Withdrawal request sent to the organizer.",
+      data: booking,
+    });
   }),
 );
 
