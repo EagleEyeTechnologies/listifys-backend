@@ -10,6 +10,19 @@ export function errorHandler(
   _next: NextFunction,
 ) {
   if (err instanceof AppError) {
+    // Always surface delivery / auth failures in logs (otp.ts also logs provider bodies).
+    if (
+      err.statusCode >= 500 ||
+      err.code === "OTP_DELIVERY_UNAVAILABLE" ||
+      err.code === "INTERNAL_ERROR"
+    ) {
+      logger.error("Request failed", {
+        code: err.code,
+        message: err.message,
+        statusCode: err.statusCode,
+        details: err.details,
+      });
+    }
     return res.status(err.statusCode).json({
       success: false,
       error: {
