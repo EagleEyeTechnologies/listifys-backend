@@ -30,6 +30,7 @@ legacyImagesRouter.use((req, res) => {
 const presignSchema = z.object({
   contentType: z.string().min(3).max(100),
   ext: z.string().min(1).max(10).optional(),
+  folder: z.enum(["listings", "profiles"]).optional(),
 });
 
 export { s3Configured };
@@ -44,7 +45,8 @@ mediaRouter.post(
     }
 
     const ext = parsed.data.ext || "jpg";
-    const key = `listings/${req.userId}/${randomUUID()}.${ext}`;
+    const folder = parsed.data.folder || "listings";
+    const key = `${folder}/${req.userId}/${randomUUID()}.${ext}`;
 
     if (!s3Configured()) {
       if (env.NODE_ENV === "production") {
