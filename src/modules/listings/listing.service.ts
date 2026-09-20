@@ -82,7 +82,12 @@ function listingPublicSlug(doc: InstanceType<typeof Listing>) {
   if (doc.slug) return doc.slug;
   const generated = listingSlugFrom(doc.title, doc._id.toString());
   doc.slug = generated;
-  void doc.save().catch(() => undefined);
+  // Avoid doc.save() here — it races with other saves on the same document
+  // (ParallelSaveError). Persist via updateOne so callers can save freely.
+  void Listing.updateOne(
+    { _id: doc._id, $or: [{ slug: null }, { slug: "" }, { slug: { $exists: false } }] },
+    { $set: { slug: generated } },
+  ).catch(() => undefined);
   return generated;
 }
 
@@ -136,8 +141,13 @@ export async function createListing(
   const seller = await User.findById(sellerId);
   if (!seller) throw new AppError(401, "Seller not found", "UNAUTHORIZED");
 
+  const id = new mongoose.Types.ObjectId();
+  const slug = listingSlugFrom(input.title, id.toString());
+
   const listing = await Listing.create({
+    _id: id,
     ...input,
+    slug,
     currency: input.currency || currencyFor(countryCode),
     countryCode,
     images: input.images || [],
@@ -152,8 +162,6 @@ export async function createListing(
         : undefined,
   });
 
-  listing.slug = listingPublicSlug(listing);
-  await listing.save();
   await indexListing(listing);
   await enqueueListingSideEffect("created", listing._id.toString());
   return toPublic(listing);
