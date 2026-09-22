@@ -39,11 +39,7 @@ chatRouter.post(
     if (!parsed.success) {
       throw new AppError(400, "Invalid message", "VALIDATION_ERROR", parsed.error.flatten());
     }
-    const result = await sendMessage(
-      req.userId!,
-      String(req.params.id),
-      parsed.data.text,
-    );
+    const result = await sendMessage(req.userId!, String(req.params.id), parsed.data.text);
     const io = getIo();
     if (io) {
       for (const pid of result.participantIds) {

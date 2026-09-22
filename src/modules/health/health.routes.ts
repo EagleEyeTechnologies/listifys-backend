@@ -11,20 +11,14 @@ export const healthRouter = Router();
 
 function paymentsStatus() {
   return {
-    razorpay: Boolean(
-      env.RAZORPAY_ENABLED && env.RAZORPAY_KEY_ID && env.RAZORPAY_KEY_SECRET,
-    ),
-    stripe: Boolean(
-      env.STRIPE_ENABLED && env.STRIPE_SECRET_KEY && env.STRIPE_PUBLISHABLE_KEY,
-    ),
+    razorpay: Boolean(env.RAZORPAY_ENABLED && env.RAZORPAY_KEY_ID && env.RAZORPAY_KEY_SECRET),
+    stripe: Boolean(env.STRIPE_ENABLED && env.STRIPE_SECRET_KEY && env.STRIPE_PUBLISHABLE_KEY),
   };
 }
 
 function otpProviders() {
   return {
-    twilioSms: Boolean(
-      env.TWILIO_ACCOUNT_SID && env.TWILIO_AUTH_TOKEN && env.TWILIO_FROM_NUMBER,
-    ),
+    twilioSms: Boolean(env.TWILIO_ACCOUNT_SID && env.TWILIO_AUTH_TOKEN && env.TWILIO_FROM_NUMBER),
     twilioVerify: Boolean(env.TWILIO_VERIFY_SERVICE_SID),
     resend: Boolean(env.RESEND_API_KEY && env.EMAIL_FROM),
   };

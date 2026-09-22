@@ -16,14 +16,9 @@ const adminActivitySchema = new Schema(
 
 adminActivitySchema.index({ createdAt: -1 });
 
-export type AdminActivityDocument = InferSchemaType<
-  typeof adminActivitySchema
-> & {
+export type AdminActivityDocument = InferSchemaType<typeof adminActivitySchema> & {
   _id: mongoose.Types.ObjectId;
   createdAt: Date;
 };
 
-export const AdminActivity = mongoose.model(
-  "AdminActivity",
-  adminActivitySchema,
-);
+export const AdminActivity = mongoose.model("AdminActivity", adminActivitySchema);

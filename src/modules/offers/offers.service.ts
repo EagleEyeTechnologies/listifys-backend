@@ -30,17 +30,10 @@ function formatTime(date?: Date | null) {
   return date.toLocaleDateString([], { month: "short", day: "numeric" });
 }
 
-async function serialize(
-  doc: InstanceType<typeof ListingOffer>,
-  viewerId: string,
-) {
-  const [buyer, seller] = await Promise.all([
-    User.findById(doc.buyer),
-    User.findById(doc.seller),
-  ]);
+async function serialize(doc: InstanceType<typeof ListingOffer>, viewerId: string) {
+  const [buyer, seller] = await Promise.all([User.findById(doc.buyer), User.findById(doc.seller)]);
   const createdAt =
-    (doc as InstanceType<typeof ListingOffer> & { createdAt?: Date })
-      .createdAt || new Date();
+    (doc as InstanceType<typeof ListingOffer> & { createdAt?: Date }).createdAt || new Date();
   const viewerIsSeller = doc.seller.toString() === viewerId;
   return {
     id: doc._id.toString(),
@@ -74,10 +67,7 @@ export async function listOffers(userId: string) {
   return Promise.all(rows.map((row) => serialize(row, userId)));
 }
 
-export async function createOffer(
-  buyerId: string,
-  input: z.infer<typeof createOfferSchema>,
-) {
+export async function createOffer(buyerId: string, input: z.infer<typeof createOfferSchema>) {
   if (!mongoose.isValidObjectId(input.listingId)) {
     throw new AppError(400, "Invalid listing", "VALIDATION_ERROR");
   }

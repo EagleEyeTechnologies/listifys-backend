@@ -10,23 +10,17 @@ function isActiveStatus(status: string) {
   return status === "trialing" || status === "active";
 }
 
-async function syncUserPremium(
-  userId: string,
-  patch: Record<string, unknown>,
-) {
+async function syncUserPremium(userId: string, patch: Record<string, unknown>) {
   await User.updateOne(
     { _id: userId },
     {
-      $set: Object.fromEntries(
-        Object.entries(patch).map(([k, v]) => [`sellerPremium.${k}`, v]),
-      ),
+      $set: Object.fromEntries(Object.entries(patch).map(([k, v]) => [`sellerPremium.${k}`, v])),
     },
   );
 }
 
 export function publicPremiumStatus(user: InstanceType<typeof User> | null) {
-  const sp = (user as { sellerPremium?: Record<string, unknown> } | null)
-    ?.sellerPremium || {};
+  const sp = (user as { sellerPremium?: Record<string, unknown> } | null)?.sellerPremium || {};
   const status = String(sp.status || "none");
   const active = isActiveStatus(status);
   return {
@@ -41,9 +35,7 @@ export function publicPremiumStatus(user: InstanceType<typeof User> | null) {
     trialUsed: Boolean(sp.trialUsed),
     freeBoostsRemaining: Number(sp.freeBoostsRemaining || 0),
     freeBoostsPerMonth: Number(sp.freeBoostsPerMonth || 3),
-    subscriptionId: sp.subscriptionId
-      ? String(sp.subscriptionId)
-      : null,
+    subscriptionId: sp.subscriptionId ? String(sp.subscriptionId) : null,
     provider: String(sp.provider || ""),
   };
 }
@@ -53,27 +45,16 @@ export async function getPremiumStatus(userId: string) {
   return publicPremiumStatus(user);
 }
 
-export async function startPremiumTrial(
-  userId: string,
-  countryCode: CountryCode,
-) {
+export async function startPremiumTrial(userId: string, countryCode: CountryCode) {
   const user = await User.findById(userId);
   if (!user) throw new AppError(404, "User not found", "NOT_FOUND");
 
   const current = publicPremiumStatus(user);
   if (current.active) {
-    throw new AppError(
-      409,
-      "You already have an active Premium membership",
-      "ALREADY_PREMIUM",
-    );
+    throw new AppError(409, "You already have an active Premium membership", "ALREADY_PREMIUM");
   }
   if (current.trialUsed) {
-    throw new AppError(
-      409,
-      "Free trial already used. Please subscribe.",
-      "TRIAL_USED",
-    );
+    throw new AppError(409, "Free trial already used. Please subscribe.", "TRIAL_USED");
   }
 
   const plan = getPremiumPlan(countryCode);

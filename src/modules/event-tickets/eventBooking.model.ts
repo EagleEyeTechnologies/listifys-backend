@@ -43,13 +43,7 @@ const eventBookingSchema = new Schema(
     eventTitle: { type: String, default: "" },
     status: {
       type: String,
-      enum: [
-        "pending_payment",
-        "confirmed",
-        "cancelled",
-        "refunded",
-        "withdraw_requested",
-      ],
+      enum: ["pending_payment", "confirmed", "cancelled", "refunded", "withdraw_requested"],
       default: "pending_payment",
       index: true,
     },

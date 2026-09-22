@@ -26,12 +26,7 @@ compareRouter.post(
   asyncHandler(async (req, res) => {
     const parsed = toggleCompareSchema.safeParse(req.body);
     if (!parsed.success) {
-      throw new AppError(
-        400,
-        "listingId required",
-        "VALIDATION_ERROR",
-        parsed.error.flatten(),
-      );
+      throw new AppError(400, "listingId required", "VALIDATION_ERROR", parsed.error.flatten());
     }
     const data = await toggleCompare(req.userId!, parsed.data.listingId);
     res.json({ success: true, data });

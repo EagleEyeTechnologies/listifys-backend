@@ -27,14 +27,9 @@ const appUpdateConfigSchema = new Schema(
   { timestamps: true },
 );
 
-export type AppUpdateConfigDocument = InferSchemaType<
-  typeof appUpdateConfigSchema
-> & {
+export type AppUpdateConfigDocument = InferSchemaType<typeof appUpdateConfigSchema> & {
   _id: mongoose.Types.ObjectId;
   createdAt: Date;
 };
 
-export const AppUpdateConfig = mongoose.model(
-  "AppUpdateConfig",
-  appUpdateConfigSchema,
-);
+export const AppUpdateConfig = mongoose.model("AppUpdateConfig", appUpdateConfigSchema);

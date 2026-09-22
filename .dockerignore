@@ -1,0 +1,26 @@
+# Dependencies & build output
+node_modules
+dist
+coverage
+*.log
+
+# Secrets & local env (inject at runtime via --env-file / orchestrator)
+.env
+.env.*
+!.env.example
+config/firebase-service-account.json
+**/firebase-service-account.json
+
+# Git / IDE / docs
+.git
+.gitignore
+.gitattributes
+.vscode
+.idea
+*.md
+migration-reports
+
+# Docker (avoid recursive context noise)
+Dockerfile*
+docker-compose*.yml
+.dockerignore

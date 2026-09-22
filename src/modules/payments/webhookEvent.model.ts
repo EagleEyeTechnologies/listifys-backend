@@ -18,10 +18,7 @@ const webhookEventSchema = new Schema(
   { timestamps: true },
 );
 
-webhookEventSchema.index(
-  { provider: 1, providerEventId: 1 },
-  { unique: true },
-);
+webhookEventSchema.index({ provider: 1, providerEventId: 1 }, { unique: true });
 
 export type WebhookEventDocument = InferSchemaType<typeof webhookEventSchema> & {
   _id: mongoose.Types.ObjectId;

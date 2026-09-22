@@ -20,7 +20,7 @@ export const createListingSchema = z.object({
   price: z.number().min(0),
   currency: z.string().optional(),
   condition: z.string().optional(),
-    images: z.array(z.string().min(1)).max(20).optional(),
+  images: z.array(z.string().min(1)).max(20).optional(),
   location: z.string().min(2),
   city: z.string().min(2),
   lat: z.number().min(-90).max(90).optional(),
@@ -39,17 +39,11 @@ export const listQuerySchema = z.object({
   type: z.string().optional(),
   city: z.string().optional(),
   q: z.string().optional(),
-  status: z
-    .enum(["active", "sold", "paused", "expired", "removed"])
-    .optional()
-    .default("active"),
+  status: z.enum(["active", "sold", "paused", "expired", "removed"]).optional().default("active"),
   lat: z.coerce.number().optional(),
   lng: z.coerce.number().optional(),
   radiusMiles: z.coerce.number().min(1).max(500).optional(),
-  sort: z
-    .enum(["latest", "price-asc", "price-desc", "nearest"])
-    .optional()
-    .default("latest"),
+  sort: z.enum(["latest", "price-asc", "price-desc", "nearest"]).optional().default("latest"),
   page: z.coerce.number().min(1).default(1),
   limit: z.coerce.number().min(1).max(500).default(20),
   sellerId: z.string().optional(),
@@ -197,9 +191,7 @@ export async function getListingById(idOrSlug: string) {
   if (!listing.slug) listing.slug = listingSlugFrom(listing.title, listing._id.toString());
 
   // Prefer live seller avatar/name (denormalized fields can be stale/empty)
-  const seller = await User.findById(listing.seller)
-    .select("avatar name")
-    .lean();
+  const seller = await User.findById(listing.seller).select("avatar name").lean();
   if (seller) {
     if (seller.avatar) {
       listing.sellerAvatar = seller.avatar;
@@ -321,10 +313,7 @@ export async function browseListings(
   if (useGeo && query.radiusMiles) {
     filter.coordinates = {
       $geoWithin: {
-        $centerSphere: [
-          [query.lng, query.lat],
-          query.radiusMiles / 3958.8,
-        ],
+        $centerSphere: [[query.lng, query.lat], query.radiusMiles / 3958.8],
       },
     };
   }
@@ -347,15 +336,11 @@ export async function browseListings(
       if (item.lat === undefined || item.lng === undefined) return item;
       return {
         ...item,
-        distanceMiles: Number(
-          distanceMiles(query.lat!, query.lng!, item.lat, item.lng).toFixed(1),
-        ),
+        distanceMiles: Number(distanceMiles(query.lat!, query.lng!, item.lat, item.lng).toFixed(1)),
       };
     });
     if (query.sort === "nearest") {
-      items = items.sort(
-        (a, b) => (a.distanceMiles ?? 1e9) - (b.distanceMiles ?? 1e9),
-      );
+      items = items.sort((a, b) => (a.distanceMiles ?? 1e9) - (b.distanceMiles ?? 1e9));
     }
   }
 

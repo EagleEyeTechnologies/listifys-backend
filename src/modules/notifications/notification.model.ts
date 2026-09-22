@@ -34,9 +34,7 @@ const notificationSchema = new Schema(
 
 notificationSchema.index({ user: 1, createdAt: -1 });
 
-export type NotificationDocument = InferSchemaType<
-  typeof notificationSchema
-> & {
+export type NotificationDocument = InferSchemaType<typeof notificationSchema> & {
   _id: mongoose.Types.ObjectId;
   createdAt: Date;
 };

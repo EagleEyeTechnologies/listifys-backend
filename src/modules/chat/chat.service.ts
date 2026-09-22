@@ -50,14 +50,10 @@ function sanitizeListingHref(href?: string | null) {
   });
 }
 
-export function serializeMessage(
-  msg: InstanceType<typeof Message>,
-  viewerId: string,
-) {
+export function serializeMessage(msg: InstanceType<typeof Message>, viewerId: string) {
   const mine = msg.sender.toString() === viewerId;
   const createdAt =
-    (msg as InstanceType<typeof Message> & { createdAt?: Date }).createdAt ||
-    new Date();
+    (msg as InstanceType<typeof Message> & { createdAt?: Date }).createdAt || new Date();
   return {
     id: msg._id.toString(),
     kind: msg.kind === "system" ? "system" : "text",
@@ -75,17 +71,14 @@ export async function listConversations(userId: string) {
     .limit(100);
 
   const otherIds = rows
-    .map((c) =>
-      c.participants.map((p) => p.toString()).find((id) => id !== userId),
-    )
+    .map((c) => c.participants.map((p) => p.toString()).find((id) => id !== userId))
     .filter(Boolean) as string[];
 
   const users = await User.find({ _id: { $in: otherIds } });
   const userMap = new Map(users.map((u) => [u._id.toString(), u]));
 
   return rows.map((c) => {
-    const otherId =
-      c.participants.map((p) => p.toString()).find((id) => id !== userId) || "";
+    const otherId = c.participants.map((p) => p.toString()).find((id) => id !== userId) || "";
     const other = userMap.get(otherId);
     const unread = Number(c.unreadBy?.get?.(userId) || 0);
     return {
@@ -116,10 +109,7 @@ export async function getMessages(userId: string, conversationId: string) {
     throw new AppError(404, "Conversation not found", "NOT_FOUND");
   }
   const conversation = await Conversation.findById(conversationId);
-  if (
-    !conversation ||
-    !conversation.participants.some((p) => p.toString() === userId)
-  ) {
+  if (!conversation || !conversation.participants.some((p) => p.toString() === userId)) {
     throw new AppError(404, "Conversation not found", "NOT_FOUND");
   }
 
@@ -144,19 +134,12 @@ export async function getMessages(userId: string, conversationId: string) {
   return messages.map((m) => serializeMessage(m, userId));
 }
 
-export async function sendMessage(
-  userId: string,
-  conversationId: string,
-  text: string,
-) {
+export async function sendMessage(userId: string, conversationId: string, text: string) {
   if (!mongoose.isValidObjectId(conversationId)) {
     throw new AppError(404, "Conversation not found", "NOT_FOUND");
   }
   const conversation = await Conversation.findById(conversationId);
-  if (
-    !conversation ||
-    !conversation.participants.some((p) => p.toString() === userId)
-  ) {
+  if (!conversation || !conversation.participants.some((p) => p.toString() === userId)) {
     throw new AppError(404, "Conversation not found", "NOT_FOUND");
   }
 
@@ -244,9 +227,7 @@ export async function startConversation(
 
   let conversation = await Conversation.findOne({
     participants: { $all: [userId, input.recipientId], $size: 2 },
-    ...(listingMeta.listingId
-      ? { listingId: listingMeta.listingId }
-      : { listingId: null }),
+    ...(listingMeta.listingId ? { listingId: listingMeta.listingId } : { listingId: null }),
   });
 
   if (!conversation) {

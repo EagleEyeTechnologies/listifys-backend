@@ -49,8 +49,9 @@ export function serializeReview(
     comment: doc.comment,
     status: doc.status,
     createdAt:
-      (doc as InstanceType<typeof SellerReview> & { createdAt?: Date })
-        .createdAt?.toISOString?.() || new Date().toISOString(),
+      (
+        doc as InstanceType<typeof SellerReview> & { createdAt?: Date }
+      ).createdAt?.toISOString?.() || new Date().toISOString(),
   };
 }
 
@@ -66,9 +67,7 @@ export async function listSellerReviews(sellerId: string, limit = 20) {
     .limit(Math.min(limit, 50));
 
   const reviewerIds = [...new Set(rows.map((r) => r.reviewer.toString()))];
-  const reviewers = await User.find({ _id: { $in: reviewerIds } }).select(
-    "name avatar",
-  );
+  const reviewers = await User.find({ _id: { $in: reviewerIds } }).select("name avatar");
   const byId = new Map(reviewers.map((u) => [u._id.toString(), u]));
 
   return {
@@ -106,16 +105,10 @@ export async function createSellerReview(
     if (!mongoose.isValidObjectId(input.listingId)) {
       throw new AppError(400, "Invalid listing id", "VALIDATION_ERROR");
     }
-    const listing = await Listing.findById(input.listingId).select(
-      "seller category",
-    );
+    const listing = await Listing.findById(input.listingId).select("seller category");
     if (!listing) throw new AppError(404, "Listing not found", "NOT_FOUND");
     if (listing.seller.toString() !== input.sellerId) {
-      throw new AppError(
-        400,
-        "Listing does not belong to this seller",
-        "VALIDATION_ERROR",
-      );
+      throw new AppError(400, "Listing does not belong to this seller", "VALIDATION_ERROR");
     }
     listingCategory = listing.category;
   }
@@ -143,11 +136,7 @@ export async function createSellerReview(
       "code" in err &&
       (err as { code?: number }).code === 11000
     ) {
-      throw new AppError(
-        409,
-        "You already reviewed this seller",
-        "ALREADY_REVIEWED",
-      );
+      throw new AppError(409, "You already reviewed this seller", "ALREADY_REVIEWED");
     }
     throw err;
   }

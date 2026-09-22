@@ -46,10 +46,7 @@ eventTicketsRouter.get(
   "/my-bookings/:bookingId",
   requireAuth,
   asyncHandler(async (req, res) => {
-    const booking = await getBookingForUser(
-      String(req.params.bookingId),
-      String(req.userId),
-    );
+    const booking = await getBookingForUser(String(req.params.bookingId), String(req.userId));
     res.json({ success: true, data: booking });
   }),
 );
@@ -61,8 +58,7 @@ eventTicketsRouter.post(
     const booking = await requestBookingWithdrawal({
       userId: String(req.userId),
       bookingId: String(req.params.bookingId),
-      reason:
-        typeof req.body?.reason === "string" ? req.body.reason : undefined,
+      reason: typeof req.body?.reason === "string" ? req.body.reason : undefined,
     });
     res.json({
       success: true,
@@ -128,10 +124,7 @@ eventTicketsRouter.get(
   "/:listingId/bookings",
   requireAuth,
   asyncHandler(async (req, res) => {
-    const items = await getOrganizerBookings(
-      String(req.params.listingId),
-      String(req.userId),
-    );
+    const items = await getOrganizerBookings(String(req.params.listingId), String(req.userId));
     res.json({ success: true, data: { items } });
   }),
 );

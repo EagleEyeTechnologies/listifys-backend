@@ -1,10 +1,5 @@
 /** Haversine distance in miles between two WGS84 points. */
-export function distanceMiles(
-  lat1: number,
-  lng1: number,
-  lat2: number,
-  lng2: number,
-): number {
+export function distanceMiles(lat1: number, lng1: number, lat2: number, lng2: number): number {
   const toRad = (d: number) => (d * Math.PI) / 180;
   const R = 3958.8;
   const dLat = toRad(lat2 - lat1);
