@@ -14,10 +14,10 @@
 #    PROD_EC2_USERNAME
 #    PROD_EC2_SSH_KEY
 #    PROD_EC2_ENV_DIR                (optional; default /home/ubuntu/Listifys-prod)
+#    ENV_FILE_PRODUCTION             (required for deploy; full .env file contents)
 #
 #  EC2 prep (once):
 #    • Docker installed; deploy user in docker group
-#    • ${PROD_EC2_ENV_DIR}/.env present with runtime secrets
 # ════════════════════════════════════════════════════════════════
 
 name: Backend Production
@@ -157,12 +157,25 @@ jobs:
           EC2_HOST: ${{ secrets.PROD_EC2_HOST }}
           EC2_USER: ${{ secrets.PROD_EC2_USERNAME }}
           ENV_DIR: ${{ steps.cfg.outputs.env_dir }}
+          ENV_FILE: ${{ secrets.ENV_FILE_PRODUCTION }}
           IMAGE: ${{ needs.build-and-push.outputs.image }}
           TAG: ${{ needs.build-and-push.outputs.tag }}
           REGION: ${{ needs.build-and-push.outputs.region }}
         run: |
           set -euo pipefail
           REGISTRY="${IMAGE%%/*}"
+
+          if [ -z "${ENV_FILE}" ]; then
+            echo "ERROR: secret ENV_FILE_PRODUCTION is empty or missing"
+            exit 1
+          fi
+
+          printf '%s\n' "$ENV_FILE" > /tmp/listifys.env
+          ssh -i ~/.ssh/ec2_key -o StrictHostKeyChecking=yes \
+            "${EC2_USER}@${EC2_HOST}" "mkdir -p '${ENV_DIR}'"
+          scp -i ~/.ssh/ec2_key -o StrictHostKeyChecking=yes \
+            /tmp/listifys.env "${EC2_USER}@${EC2_HOST}:${ENV_DIR}/.env"
+          rm -f /tmp/listifys.env
 
           aws ecr get-login-password --region "$REGION" \
             | ssh -i ~/.ssh/ec2_key -o StrictHostKeyChecking=yes \

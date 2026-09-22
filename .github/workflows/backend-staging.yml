@@ -15,10 +15,10 @@
 #    STAGE_EC2_USERNAME
 #    STAGE_EC2_SSH_KEY
 #    STAGE_EC2_ENV_DIR               (optional; default /home/ubuntu/Listifys-stage)
+#    ENV_FILE_STAGING                (required for deploy; full .env file contents)
 #
 #  EC2 prep (once):
 #    • Docker installed; deploy user in docker group
-#    • ${STAGE_EC2_ENV_DIR}/.env present with runtime secrets
 # ════════════════════════════════════════════════════════════════
 
 name: Backend Staging
@@ -161,12 +161,25 @@ jobs:
           EC2_HOST: ${{ secrets.STAGE_EC2_HOST }}
           EC2_USER: ${{ secrets.STAGE_EC2_USERNAME }}
           ENV_DIR: ${{ steps.cfg.outputs.env_dir }}
+          ENV_FILE: ${{ secrets.ENV_FILE_STAGING }}
           IMAGE: ${{ needs.build-and-push.outputs.image }}
           TAG: ${{ needs.build-and-push.outputs.tag }}
           REGION: ${{ needs.build-and-push.outputs.region }}
         run: |
           set -euo pipefail
           REGISTRY="${IMAGE%%/*}"
+
+          if [ -z "${ENV_FILE}" ]; then
+            echo "ERROR: secret ENV_FILE_STAGING is empty or missing"
+            exit 1
+          fi
+
+          printf '%s\n' "$ENV_FILE" > /tmp/listifys.env
+          ssh -i ~/.ssh/ec2_key -o StrictHostKeyChecking=yes \
+            "${EC2_USER}@${EC2_HOST}" "mkdir -p '${ENV_DIR}'"
+          scp -i ~/.ssh/ec2_key -o StrictHostKeyChecking=yes \
+            /tmp/listifys.env "${EC2_USER}@${EC2_HOST}:${ENV_DIR}/.env"
+          rm -f /tmp/listifys.env
 
           aws ecr get-login-password --region "$REGION" \
             | ssh -i ~/.ssh/ec2_key -o StrictHostKeyChecking=yes \
