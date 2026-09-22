@@ -74,9 +74,7 @@ export async function activateBoostFromPayment(paymentId: string) {
     throw new AppError(404, "Payment not found", "NOT_FOUND");
   }
   if (payment.status === "succeeded") {
-    const existing = payment.campaignId
-      ? await BoostCampaign.findById(payment.campaignId)
-      : null;
+    const existing = payment.campaignId ? await BoostCampaign.findById(payment.campaignId) : null;
     return { payment, campaign: existing, already: true as const };
   }
 
@@ -84,9 +82,7 @@ export async function activateBoostFromPayment(paymentId: string) {
   payment.succeededAt = new Date();
   await payment.save();
 
-  let campaign = payment.campaignId
-    ? await BoostCampaign.findById(payment.campaignId)
-    : null;
+  const campaign = payment.campaignId ? await BoostCampaign.findById(payment.campaignId) : null;
 
   if (!campaign) {
     logger.warn("Payment succeeded without campaign", {

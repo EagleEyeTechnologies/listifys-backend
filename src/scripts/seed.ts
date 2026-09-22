@@ -22,9 +22,8 @@ async function seed() {
 
   const samples = [
     {
-      title: "[Seed] Samsung 55\" 4K Smart TV",
-      description:
-        "Barely used Samsung 4K TV with remote and wall mount. Great picture.",
+      title: '[Seed] Samsung 55" 4K Smart TV',
+      description: "Barely used Samsung 4K TV with remote and wall mount. Great picture.",
       category: "electronics" as const,
       subcategory: "TVs & Audio",
       intent: "sale" as const,
@@ -32,9 +31,7 @@ async function seed() {
       currency: "INR",
       countryCode: "IN" as const,
       condition: "Like New",
-      images: [
-        "https://images.unsplash.com/photo-1593359677879-a4bb92f829d1?w=800&q=80",
-      ],
+      images: ["https://images.unsplash.com/photo-1593359677879-a4bb92f829d1?w=800&q=80"],
       location: "HITEC City, Hyderabad",
       city: "Hyderabad",
       coordinates: { type: "Point" as const, coordinates: [78.38, 17.44] },
@@ -52,9 +49,7 @@ async function seed() {
       price: 28000,
       currency: "INR",
       countryCode: "IN" as const,
-      images: [
-        "https://images.unsplash.com/photo-1560448204-e02f11c3d0e2?w=800&q=80",
-      ],
+      images: ["https://images.unsplash.com/photo-1560448204-e02f11c3d0e2?w=800&q=80"],
       location: "Gachibowli, Hyderabad",
       city: "Hyderabad",
       coordinates: { type: "Point" as const, coordinates: [78.35, 17.44] },
@@ -77,9 +72,7 @@ async function seed() {
       price: 70000,
       currency: "INR",
       countryCode: "IN" as const,
-      images: [
-        "https://images.unsplash.com/photo-1517336714731-489689fd1ca8?w=800&q=80",
-      ],
+      images: ["https://images.unsplash.com/photo-1517336714731-489689fd1ca8?w=800&q=80"],
       location: "Madhapur, Hyderabad",
       city: "Hyderabad",
       coordinates: { type: "Point" as const, coordinates: [78.39, 17.45] },
@@ -94,9 +87,7 @@ async function seed() {
       price: 350,
       currency: "INR",
       countryCode: "IN" as const,
-      images: [
-        "https://images.unsplash.com/photo-1476703993599-0035a21b17a9?w=800&q=80",
-      ],
+      images: ["https://images.unsplash.com/photo-1476703993599-0035a21b17a9?w=800&q=80"],
       location: "Jubilee Hills, Hyderabad",
       city: "Hyderabad",
       coordinates: { type: "Point" as const, coordinates: [78.41, 17.43] },
@@ -149,9 +140,7 @@ async function seed() {
       listingTitle: listing?.title || "Seed listing",
       listingImage: listing?.images?.[0] || "",
       listingPrice: listing?.price || 0,
-      listingHref: listing
-        ? `/${listing.category}/${listing._id}`
-        : "/browse",
+      listingHref: listing ? `/${listing.category}/${listing._id}` : "/browse",
       lastMessageText: "Is this still available?",
       lastMessageAt: new Date(),
       unreadBy: {},
@@ -175,9 +164,7 @@ async function seed() {
     await conversation.save();
   }
 
-  const { Notification } = await import(
-    "../modules/notifications/notification.model.js"
-  );
+  const { Notification } = await import("../modules/notifications/notification.model.js");
   await Notification.deleteMany({
     user: { $in: [buyer._id, seller._id] },
     title: /^\[Seed\]/,

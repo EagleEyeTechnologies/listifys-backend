@@ -82,11 +82,7 @@ export async function toggleCompare(userId: string, listingId: string) {
     added = false;
   } else {
     if (ids.length >= MAX_COMPARE) {
-      throw new AppError(
-        400,
-        `Compare up to ${MAX_COMPARE} listings`,
-        "COMPARE_LIMIT",
-      );
+      throw new AppError(400, `Compare up to ${MAX_COMPARE} listings`, "COMPARE_LIMIT");
     }
     if (mongoose.isValidObjectId(listingId)) {
       const listing = await Listing.findById(listingId);

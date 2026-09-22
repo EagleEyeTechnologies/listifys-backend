@@ -77,10 +77,7 @@ export function listBoostPlans(countryCode: CountryCode): BoostPlanDto[] {
   });
 }
 
-export function getBoostPlan(
-  planKey: string,
-  countryCode: CountryCode,
-): BoostPlanDto | null {
+export function getBoostPlan(planKey: string, countryCode: CountryCode): BoostPlanDto | null {
   return listBoostPlans(countryCode).find((p) => p.planKey === planKey) || null;
 }
 

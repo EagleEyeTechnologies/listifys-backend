@@ -17,11 +17,7 @@ export function initQueues() {
   logger.info("BullMQ queues ready");
 }
 
-export async function enqueueEmail(job: {
-  to: string;
-  subject: string;
-  body: string;
-}) {
+export async function enqueueEmail(job: { to: string; subject: string; body: string }) {
   if (!emailQueue) {
     logger.info("email job (no queue)", job);
     return;

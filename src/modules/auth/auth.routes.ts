@@ -1,4 +1,4 @@
-import { Router } from "express";
+import { Router, type Response } from "express";
 import { asyncHandler } from "../../utils/asyncHandler.js";
 import { authRateLimit } from "../../middleware/rateLimit.js";
 import {
@@ -30,11 +30,7 @@ export const authRouter = Router();
 
 authRouter.use(authRateLimit);
 
-function setAuthCookies(
-  res: import("express").Response,
-  accessToken: string,
-  refreshToken: string,
-) {
+function setAuthCookies(res: Response, accessToken: string, refreshToken: string) {
   const secure = env.NODE_ENV === "production";
   res.cookie("accessToken", accessToken, {
     httpOnly: true,
@@ -155,11 +151,9 @@ authRouter.post(
   "/refresh",
   asyncHandler(async (req, res) => {
     const bodyToken = refreshSchema.safeParse(req.body);
-    const cookieToken = (req as typeof req & { cookies?: Record<string, string> })
-      .cookies?.refreshToken;
-    const refreshToken = bodyToken.success
-      ? bodyToken.data.refreshToken
-      : cookieToken;
+    const cookieToken = (req as typeof req & { cookies?: Record<string, string> }).cookies
+      ?.refreshToken;
+    const refreshToken = bodyToken.success ? bodyToken.data.refreshToken : cookieToken;
     if (!refreshToken) {
       throw new AppError(400, "refreshToken required", "VALIDATION_ERROR");
     }
@@ -173,8 +167,8 @@ authRouter.post(
   "/logout",
   asyncHandler(async (req, res) => {
     const bodyToken = refreshSchema.safeParse(req.body);
-    const cookieToken = (req as typeof req & { cookies?: Record<string, string> })
-      .cookies?.refreshToken;
+    const cookieToken = (req as typeof req & { cookies?: Record<string, string> }).cookies
+      ?.refreshToken;
     await logout(bodyToken.success ? bodyToken.data.refreshToken : cookieToken);
     res.clearCookie("accessToken");
     res.clearCookie("refreshToken");

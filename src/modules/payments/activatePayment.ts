@@ -1,9 +1,6 @@
 import { Payment } from "./payment.model.js";
 import { activateBoostFromPayment, markBoostRefunded } from "../boost/boost.service.js";
-import {
-  activatePremiumFromPayment,
-  markPremiumRefunded,
-} from "../premium/premium.service.js";
+import { activatePremiumFromPayment, markPremiumRefunded } from "../premium/premium.service.js";
 import {
   activateEventBookingFromPayment,
   markEventTicketRefunded,

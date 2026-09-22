@@ -31,9 +31,7 @@ const notificationCampaignSchema = new Schema(
   { timestamps: true },
 );
 
-export type NotificationCampaignDocument = InferSchemaType<
-  typeof notificationCampaignSchema
-> & {
+export type NotificationCampaignDocument = InferSchemaType<typeof notificationCampaignSchema> & {
   _id: mongoose.Types.ObjectId;
   createdAt: Date;
 };

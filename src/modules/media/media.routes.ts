@@ -76,11 +76,7 @@ mediaRouter.post(
 
     if (!s3Configured()) {
       if (env.NODE_ENV === "production") {
-        throw new AppError(
-          503,
-          "Media uploads are not configured (S3)",
-          "S3_NOT_CONFIGURED",
-        );
+        throw new AppError(503, "Media uploads are not configured (S3)", "S3_NOT_CONFIGURED");
       }
       const mockUrl = `https://example-bucket.s3.amazonaws.com/${key}`;
       return res.json({
@@ -146,11 +142,7 @@ mediaRouter.post(
 
     if (!s3Configured()) {
       if (env.NODE_ENV === "production") {
-        throw new AppError(
-          503,
-          "Media uploads are not configured (S3)",
-          "S3_NOT_CONFIGURED",
-        );
+        throw new AppError(503, "Media uploads are not configured (S3)", "S3_NOT_CONFIGURED");
       }
       const mockUrl = `https://example-bucket.s3.amazonaws.com/${key}`;
       return res.json({

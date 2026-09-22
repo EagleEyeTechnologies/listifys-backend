@@ -59,11 +59,7 @@ function getServerKey(): string {
 function requireKey(): string {
   const key = getServerKey();
   if (!key) {
-    throw new AppError(
-      503,
-      "Google Maps is not configured",
-      "MAPS_NOT_CONFIGURED",
-    );
+    throw new AppError(503, "Google Maps is not configured", "MAPS_NOT_CONFIGURED");
   }
   return key;
 }
@@ -129,8 +125,7 @@ async function googleGet(path: string, params: Record<string, string>): Promise<
 
 function mapPrediction(p: Record<string, unknown>): PlacePrediction {
   const structured = p.structured_formatting as
-    | { main_text?: string; secondary_text?: string }
-    | undefined;
+    { main_text?: string; secondary_text?: string } | undefined;
   const description = String(p.description || "");
   return {
     placeId: String(p.place_id || ""),
@@ -159,9 +154,7 @@ function parseAddressComponents(components: unknown[] = []) {
     if (t.includes("route")) street = c.long_name || "";
     if (
       !sublocality &&
-      (t.includes("sublocality_level_1") ||
-        t.includes("sublocality") ||
-        t.includes("neighborhood"))
+      (t.includes("sublocality_level_1") || t.includes("sublocality") || t.includes("neighborhood"))
     ) {
       sublocality = c.long_name || "";
     }
@@ -204,7 +197,11 @@ export async function autocomplete(input: {
   const biasLat = roundCoord(input.lat);
   const biasLng = roundCoord(input.lng);
   const allowed = new Set(["us", "ca", "in"]);
-  const cc = allowed.has(String(input.country || "").trim().toLowerCase())
+  const cc = allowed.has(
+    String(input.country || "")
+      .trim()
+      .toLowerCase(),
+  )
     ? String(input.country).trim().toLowerCase()
     : "us";
   const cacheKey = `places:ac:${cc}:${query.toLowerCase()}:${biasLat ?? ""}:${biasLng ?? ""}`;
@@ -282,9 +279,7 @@ export async function placeDetails(input: {
   const lat = geometry?.location?.lat;
   const lng = geometry?.location?.lng;
   const parsed = parseAddressComponents(
-    Array.isArray(place.address_components)
-      ? (place.address_components as unknown[])
-      : [],
+    Array.isArray(place.address_components) ? (place.address_components as unknown[]) : [],
   );
 
   const result: PlaceDetails = {
@@ -347,9 +342,7 @@ export async function reverseGeocode(input: {
 
   const place = data.results[0];
   const parsed = parseAddressComponents(
-    Array.isArray(place.address_components)
-      ? (place.address_components as unknown[])
-      : [],
+    Array.isArray(place.address_components) ? (place.address_components as unknown[]) : [],
   );
   const result: ReverseGeocodeResult = {
     placeId: String(place.place_id || ""),

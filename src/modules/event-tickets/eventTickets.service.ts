@@ -46,21 +46,13 @@ async function findActiveEvent(listingId: string) {
   return listing;
 }
 
-async function assertCanBook(
-  listing: InstanceType<typeof Listing>,
-  userId: string,
-  qty: number,
-) {
+async function assertCanBook(listing: InstanceType<typeof Listing>, userId: string, qty: number) {
   if (listing.seller.toString() === userId) {
     throw new AppError(400, "You cannot book tickets for your own event", "FORBIDDEN");
   }
   const available = ticketsAvailableOf(listing);
   if (available > 0 && qty > available) {
-    throw new AppError(
-      400,
-      `Only ${available} ticket(s) available`,
-      "INSUFFICIENT_TICKETS",
-    );
+    throw new AppError(400, `Only ${available} ticket(s) available`, "INSUFFICIENT_TICKETS");
   }
   return listing.seller.toString();
 }
@@ -184,20 +176,14 @@ async function enrichBooking(doc: InstanceType<typeof EventBooking>) {
     listing?.extras &&
     typeof listing.extras === "object" &&
     (listing.extras as { event?: Record<string, unknown> }).event
-      ? ((listing.extras as { event: Record<string, unknown> }).event as Record<
-          string,
-          unknown
-        >)
+      ? ((listing.extras as { event: Record<string, unknown> }).event as Record<string, unknown>)
       : {};
   return serializeBooking(doc, {
     eventImage: absolutizeMediaUrl(
       Array.isArray(listing?.images) ? String(listing.images[0] || "") : "",
     ),
     venue: String(
-      event.venue ||
-        (listing as { venue?: string } | null)?.venue ||
-        listing?.location ||
-        "",
+      event.venue || (listing as { venue?: string } | null)?.venue || listing?.location || "",
     ),
     eventDate: event.date ? String(event.date) : event.eventDate ? String(event.eventDate) : "",
     eventTime: event.time ? String(event.time) : event.eventTime ? String(event.eventTime) : "",
@@ -220,11 +206,7 @@ export async function confirmFreeBooking(input: {
   const listing = await findActiveEvent(input.listingId);
   const unitPrice = Number(listing.price || 0);
   if (unitPrice > 0) {
-    throw new AppError(
-      400,
-      "This event requires payment. Use checkout.",
-      "PAYMENT_REQUIRED",
-    );
+    throw new AppError(400, "This event requires payment. Use checkout.", "PAYMENT_REQUIRED");
   }
 
   const sellerId = await assertCanBook(listing, input.userId, qty);
@@ -410,9 +392,7 @@ export async function markEventTicketRefunded(paymentId: string) {
 }
 
 export async function getMyBookings(userId: string) {
-  const rows = await EventBooking.find({ userId })
-    .sort({ createdAt: -1 })
-    .limit(50);
+  const rows = await EventBooking.find({ userId }).sort({ createdAt: -1 }).limit(50);
   return Promise.all(rows.map((row) => enrichBooking(row)));
 }
 
@@ -422,10 +402,7 @@ export async function getBookingForUser(bookingId: string, userId: string) {
   }
   const booking = await EventBooking.findById(bookingId);
   if (!booking) throw new AppError(404, "Booking not found", "NOT_FOUND");
-  if (
-    booking.userId.toString() !== userId &&
-    booking.sellerId.toString() !== userId
-  ) {
+  if (booking.userId.toString() !== userId && booking.sellerId.toString() !== userId) {
     throw new AppError(403, "Not allowed to view this booking", "FORBIDDEN");
   }
   return enrichBooking(booking);
@@ -467,11 +444,7 @@ export async function requestBookingWithdrawal(input: {
     throw new AppError(404, "Booking not found", "NOT_FOUND");
   }
   if (!["confirmed", "withdraw_requested"].includes(booking.status)) {
-    throw new AppError(
-      400,
-      "This booking cannot be withdrawn",
-      "VALIDATION_ERROR",
-    );
+    throw new AppError(400, "This booking cannot be withdrawn", "VALIDATION_ERROR");
   }
   if (booking.status === "withdraw_requested") {
     return enrichBooking(booking);

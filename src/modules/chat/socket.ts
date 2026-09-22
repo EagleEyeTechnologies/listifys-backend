@@ -39,9 +39,7 @@ async function emitTypingToPeers(
 ) {
   socket.to(`conversation:${conversationId}`).emit(event, payload);
   try {
-    const convo = await Conversation.findById(conversationId)
-      .select("participants")
-      .lean();
+    const convo = await Conversation.findById(conversationId).select("participants").lean();
     for (const pid of convo?.participants || []) {
       const pidStr = String(pid);
       if (pidStr && pidStr !== userId) {
@@ -151,54 +149,38 @@ export function initSocket(httpServer: HttpServer) {
       socket.emit("users:online", listOnlineUserIds());
     });
 
-    socket.on(
-      "user:lastSeen",
-      async (data: { targetUserId?: string }) => {
-        const targetUserId = data?.targetUserId;
-        if (typeof targetUserId !== "string" || targetUserId.length > 64) {
-          return;
-        }
-        socket.emit("user:lastSeen", await presenceSnapshot(targetUserId));
-      },
-    );
+    socket.on("user:lastSeen", async (data: { targetUserId?: string }) => {
+      const targetUserId = data?.targetUserId;
+      if (typeof targetUserId !== "string" || targetUserId.length > 64) {
+        return;
+      }
+      socket.emit("user:lastSeen", await presenceSnapshot(targetUserId));
+    });
 
-    socket.on(
-      "presence:subscribe",
-      async (data: { targetUserId?: string }) => {
-        const targetUserId = data?.targetUserId;
-        if (typeof targetUserId !== "string" || targetUserId.length > 64) {
-          return;
-        }
-        if (targetUserId === userId) return;
-        socket.join(`presence:${targetUserId}`);
-        socket.emit("user:lastSeen", await presenceSnapshot(targetUserId));
-      },
-    );
+    socket.on("presence:subscribe", async (data: { targetUserId?: string }) => {
+      const targetUserId = data?.targetUserId;
+      if (typeof targetUserId !== "string" || targetUserId.length > 64) {
+        return;
+      }
+      if (targetUserId === userId) return;
+      socket.join(`presence:${targetUserId}`);
+      socket.emit("user:lastSeen", await presenceSnapshot(targetUserId));
+    });
 
-    socket.on(
-      "presence:unsubscribe",
-      (data: { targetUserId?: string }) => {
-        const targetUserId = data?.targetUserId;
-        if (typeof targetUserId !== "string" || targetUserId.length > 64) {
-          return;
-        }
-        if (targetUserId === userId) return;
-        socket.leave(`presence:${targetUserId}`);
-      },
-    );
+    socket.on("presence:unsubscribe", (data: { targetUserId?: string }) => {
+      const targetUserId = data?.targetUserId;
+      if (typeof targetUserId !== "string" || targetUserId.length > 64) {
+        return;
+      }
+      if (targetUserId === userId) return;
+      socket.leave(`presence:${targetUserId}`);
+    });
 
     socket.on(
       "chat:send",
-      async (
-        payload: { conversationId: string; text: string },
-        ack?: (resp: unknown) => void,
-      ) => {
+      async (payload: { conversationId: string; text: string }, ack?: (resp: unknown) => void) => {
         try {
-          const result = await sendMessage(
-            userId,
-            payload.conversationId,
-            payload.text,
-          );
+          const result = await sendMessage(userId, payload.conversationId, payload.text);
           for (const pid of result.participantIds) {
             io?.to(`user:${pid}`).emit("chat:message", {
               conversationId: result.conversationId,

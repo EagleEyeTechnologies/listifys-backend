@@ -12,12 +12,14 @@ import {
 } from "./tokens.js";
 import { AppError } from "../../utils/AppError.js";
 import { absolutizeMediaUrl } from "../../utils/mediaUrl.js";
-import { displayEmail, isApplePrivateRelayEmail, needsPublicEmail, normalizePhoneParts } from "../../utils/phone.js";
-import type { CountryCode } from "../../types/domain.js";
 import {
-  verifyAppleIdentityToken,
-  verifyGoogleIdToken,
-} from "./social.oauth.js";
+  displayEmail,
+  isApplePrivateRelayEmail,
+  needsPublicEmail,
+  normalizePhoneParts,
+} from "../../utils/phone.js";
+import type { CountryCode } from "../../types/domain.js";
+import { verifyAppleIdentityToken, verifyGoogleIdToken } from "./social.oauth.js";
 
 export const emailRequestSchema = z.object({
   email: z.string().email(),
@@ -114,9 +116,7 @@ async function verifyPassword(hash: string, password: string) {
 }
 
 /** Email register with password (no OTP). */
-export async function registerWithEmail(
-  input: z.infer<typeof emailRegisterSchema>,
-) {
+export async function registerWithEmail(input: z.infer<typeof emailRegisterSchema>) {
   const email = input.email.trim().toLowerCase();
   const existing = await User.findOne({ email }).select("+passwordHash");
   if (existing?.passwordHash) {
@@ -182,9 +182,7 @@ export async function requestPasswordResetOtp(email: string) {
 }
 
 /** Verify OTP and set a new password. */
-export async function resetPasswordWithOtp(
-  input: z.infer<typeof emailResetPasswordSchema>,
-) {
+export async function resetPasswordWithOtp(input: z.infer<typeof emailResetPasswordSchema>) {
   const email = input.email.trim().toLowerCase();
   await verifyOtp("email", email, input.code);
   const user = await User.findOne({ email }).select("+passwordHash");
@@ -373,11 +371,7 @@ export async function socialLogin(
         providerId: identity.appleId,
       });
     }
-    if (
-      displayName &&
-      displayName !== "Apple User" &&
-      (!user.name || user.name === "Apple User")
-    ) {
+    if (displayName && displayName !== "Apple User" && (!user.name || user.name === "Apple User")) {
       user.name = displayName;
     }
     if (identity.email && !user.email) user.email = identity.email;

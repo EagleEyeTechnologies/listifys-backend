@@ -63,10 +63,7 @@ export async function indexListing(listing: ListingDocument): Promise<void> {
       status: listing.status,
       featured: listing.featured,
       sellerId: listing.seller.toString(),
-      locationGeo:
-        coords && coords.length === 2
-          ? { lat: coords[1], lon: coords[0] }
-          : undefined,
+      locationGeo: coords && coords.length === 2 ? { lat: coords[1], lon: coords[0] } : undefined,
       createdAt: listing.createdAt,
     },
   });

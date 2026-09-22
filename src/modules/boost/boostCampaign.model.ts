@@ -25,13 +25,7 @@ const boostCampaignSchema = new Schema(
     planDays: { type: Number, required: true, min: 1 },
     status: {
       type: String,
-      enum: [
-        "pending_payment",
-        "active",
-        "expired",
-        "cancelled",
-        "refunded",
-      ],
+      enum: ["pending_payment", "active", "expired", "cancelled", "refunded"],
       default: "pending_payment",
       index: true,
     },
@@ -56,13 +50,8 @@ const boostCampaignSchema = new Schema(
 boostCampaignSchema.index({ listingId: 1, status: 1 });
 boostCampaignSchema.index({ status: 1, endAt: 1 });
 
-export type BoostCampaignDocument = InferSchemaType<
-  typeof boostCampaignSchema
-> & {
+export type BoostCampaignDocument = InferSchemaType<typeof boostCampaignSchema> & {
   _id: mongoose.Types.ObjectId;
 };
 
-export const BoostCampaign = mongoose.model(
-  "BoostCampaign",
-  boostCampaignSchema,
-);
+export const BoostCampaign = mongoose.model("BoostCampaign", boostCampaignSchema);

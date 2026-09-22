@@ -16,10 +16,7 @@ export function getAllowedOrigins(): string[] {
     .map((s) => s.trim().replace(/\/$/, ""))
     .filter(Boolean);
 
-  const origins = new Set<string>([
-    env.CLIENT_URL.replace(/\/$/, ""),
-    ...extras,
-  ]);
+  const origins = new Set<string>([env.CLIENT_URL.replace(/\/$/, ""), ...extras]);
 
   if (!isProd()) {
     origins.add("http://localhost:3000");

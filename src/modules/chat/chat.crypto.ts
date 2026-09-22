@@ -14,9 +14,7 @@ function getKey(): Buffer | null {
 
   const envKey = env.CHAT_ENCRYPTION_KEY;
   if (!envKey) {
-    logger.warn(
-      "CHAT_ENCRYPTION_KEY not set — encrypted chat messages cannot be decrypted",
-    );
+    logger.warn("CHAT_ENCRYPTION_KEY not set — encrypted chat messages cannot be decrypted");
     encryptionKey = null;
     return null;
   }
@@ -29,9 +27,7 @@ function getKey(): Buffer | null {
   }
 
   if (key.length !== 32) {
-    logger.error(
-      `CHAT_ENCRYPTION_KEY must be exactly 32 bytes. Got ${key.length} bytes.`,
-    );
+    logger.error(`CHAT_ENCRYPTION_KEY must be exactly 32 bytes. Got ${key.length} bytes.`);
     encryptionKey = null;
     return null;
   }
@@ -41,8 +37,7 @@ function getKey(): Buffer | null {
   return encryptionKey;
 }
 
-const UNREADABLE =
-  "[Message unavailable — encrypted with a different key]";
+const UNREADABLE = "[Message unavailable — encrypted with a different key]";
 
 /** Decrypt legacy `enc:` payloads (from production migrate). Plaintext passes through. */
 export function decryptChatText(cipherText: string | null | undefined): string {
@@ -67,10 +62,7 @@ export function decryptChatText(cipherText: string | null | undefined): string {
       authTagLength: AUTH_TAG_LENGTH,
     });
     decipher.setAuthTag(authTag);
-    const decrypted = Buffer.concat([
-      decipher.update(encrypted),
-      decipher.final(),
-    ]);
+    const decrypted = Buffer.concat([decipher.update(encrypted), decipher.final()]);
     return decrypted.toString("utf8");
   } catch {
     return UNREADABLE;
