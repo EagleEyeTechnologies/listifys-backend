@@ -18,10 +18,7 @@ export function parseEventStartsAt(raw?: string | null): Date | null {
   return null;
 }
 
-export function isEventPastFromExtras(
-  extras: unknown,
-  now = new Date(),
-): boolean {
+export function isEventPastFromExtras(extras: unknown, now = new Date()): boolean {
   const event =
     extras && typeof extras === "object"
       ? (extras as { event?: { startsAt?: string } }).event

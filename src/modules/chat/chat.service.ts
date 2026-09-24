@@ -1,9 +1,6 @@
 import mongoose from "mongoose";
 import { z } from "zod";
-import {
-  Conversation,
-  makeParticipantKey,
-} from "./conversation.model.js";
+import { Conversation, makeParticipantKey } from "./conversation.model.js";
 import { Message } from "./message.model.js";
 import { User } from "../users/user.model.js";
 import { Listing } from "../listings/listing.model.js";
@@ -14,10 +11,7 @@ import { createNotification } from "../notifications/notification.service.js";
 import { isUserOnline, isUserOnlineRedis } from "./presence.js";
 import { absolutizeMediaUrl } from "../../utils/mediaUrl.js";
 import { getSellerReviewStats } from "../reviews/reviews.service.js";
-import {
-  chatListingSwitchMessage,
-  chatOpeningMessage,
-} from "./chatOpeningMessage.js";
+import { chatListingSwitchMessage, chatOpeningMessage } from "./chatOpeningMessage.js";
 
 export const startConversationSchema = z.object({
   recipientId: z.string().min(1),
@@ -58,9 +52,7 @@ function yearsOnLabel(createdAt?: Date | null): string {
   if (!createdAt) return "New on Listifys";
   const years = Math.max(
     0,
-    Math.floor(
-      (Date.now() - createdAt.getTime()) / (365.25 * 24 * 60 * 60 * 1000),
-    ),
+    Math.floor((Date.now() - createdAt.getTime()) / (365.25 * 24 * 60 * 60 * 1000)),
   );
   if (years < 1) return "Less than 1 year";
   return `${years}+ year${years === 1 ? "" : "s"}`;
@@ -80,32 +72,23 @@ function sanitizeListingHref(href?: string | null) {
   });
 }
 
-export function serializeMessage(
-  msg: InstanceType<typeof Message>,
-  viewerId: string,
-) {
+export function serializeMessage(msg: InstanceType<typeof Message>, viewerId: string) {
   const senderId = msg.sender.toString();
   const mine = senderId === viewerId;
   const createdAt =
-    (msg as InstanceType<typeof Message> & { createdAt?: Date }).createdAt ||
-    new Date();
+    (msg as InstanceType<typeof Message> & { createdAt?: Date }).createdAt || new Date();
   const deleted = Boolean(msg.deletedAt);
   const edited = Boolean(msg.editedAt) && !deleted;
-  const readByPeer = (msg.readBy || []).some(
-    (id) => id.toString() !== senderId,
-  );
+  const readByPeer = (msg.readBy || []).some((id) => id.toString() !== senderId);
   const deliveredToPeer =
-    readByPeer ||
-    (msg.deliveredTo || []).some((id) => id.toString() !== senderId);
+    readByPeer || (msg.deliveredTo || []).some((id) => id.toString() !== senderId);
   const listingId = msg.listingId?.toString?.() || null;
   const listingTitle = (msg.listingTitle || "").trim();
   return {
     id: msg._id.toString(),
     kind: msg.kind === "system" ? "system" : "text",
     from: mine ? "me" : "them",
-    text: deleted
-      ? "This message was deleted"
-      : decryptChatText(msg.text),
+    text: deleted ? "This message was deleted" : decryptChatText(msg.text),
     /** Prefer clients formatting `createdAt` in the user's local timezone. */
     time: "",
     createdAt: createdAt.toISOString(),
@@ -132,10 +115,7 @@ export function serializeMessage(
   };
 }
 
-async function markDeliveredForViewer(
-  conversationId: string,
-  viewerId: string,
-) {
+async function markDeliveredForViewer(conversationId: string, viewerId: string) {
   await Message.updateMany(
     {
       conversation: conversationId,
@@ -186,9 +166,7 @@ export async function listConversations(userId: string) {
   }
 
   const otherIds = rows
-    .map((c) =>
-      c.participants.map((p) => p.toString()).find((id) => id !== userId),
-    )
+    .map((c) => c.participants.map((p) => p.toString()).find((id) => id !== userId))
     .filter(Boolean) as string[];
 
   const users = await User.find({ _id: { $in: otherIds } });
@@ -207,9 +185,7 @@ export async function listConversations(userId: string) {
     },
     { $group: { _id: "$seller", n: { $sum: 1 } } },
   ]);
-  const soldMap = new Map(
-    soldCounts.map((r) => [r._id.toString(), r.n]),
-  );
+  const soldMap = new Map(soldCounts.map((r) => [r._id.toString(), r.n]));
 
   const reviewStats = await Promise.all(
     otherIds.map(async (id) => {
@@ -233,13 +209,11 @@ export async function listConversations(userId: string) {
   const onlineMap = new Map(onlineFlags);
 
   const conversations = rows.map((c) => {
-    const otherId =
-      c.participants.map((p) => p.toString()).find((id) => id !== userId) || "";
+    const otherId = c.participants.map((p) => p.toString()).find((id) => id !== userId) || "";
     const other = userMap.get(otherId);
     const unread = Number(c.unreadBy?.get?.(userId) || 0);
-    const createdAt = (
-      other as (InstanceType<typeof User> & { createdAt?: Date }) | undefined
-    )?.createdAt;
+    const createdAt = (other as (InstanceType<typeof User> & { createdAt?: Date }) | undefined)
+      ?.createdAt;
     const reviews = reviewMap.get(otherId) || {
       averageRating: 0,
       totalReviews: 0,
@@ -285,10 +259,7 @@ export async function getMessages(userId: string, conversationId: string) {
     throw new AppError(404, "Conversation not found", "NOT_FOUND");
   }
   const conversation = await Conversation.findById(conversationId);
-  if (
-    !conversation ||
-    !conversation.participants.some((p) => p.toString() === userId)
-  ) {
+  if (!conversation || !conversation.participants.some((p) => p.toString() === userId)) {
     throw new AppError(404, "Conversation not found", "NOT_FOUND");
   }
 
@@ -338,10 +309,7 @@ export async function sendMessage(
     throw new AppError(404, "Conversation not found", "NOT_FOUND");
   }
   const conversation = await Conversation.findById(conversationId);
-  if (
-    !conversation ||
-    !conversation.participants.some((p) => p.toString() === userId)
-  ) {
+  if (!conversation || !conversation.participants.some((p) => p.toString() === userId)) {
     throw new AppError(404, "Conversation not found", "NOT_FOUND");
   }
 
@@ -466,9 +434,7 @@ export async function startConversation(
   const isNew = !conversation;
   const prevListingId = conversation?.listingId?.toString?.() || "";
   const nextListingId = listingMeta.listingId?.toString?.() || "";
-  const listingChanged = Boolean(
-    nextListingId && nextListingId !== prevListingId,
-  );
+  const listingChanged = Boolean(nextListingId && nextListingId !== prevListingId);
 
   if (!conversation) {
     conversation = await Conversation.create({
@@ -500,12 +466,10 @@ export async function startConversation(
       ? new Date(conversation.lastMessageAt).getTime()
       : Date.now() - 40;
     const tCard = new Date(Math.min(base + 10, Date.now() - 20));
-    await sendMessage(
-      userId,
-      conversationId,
-      chatListingSwitchMessage(listingMeta.listingTitle),
-      { kind: "system", createdAt: tCard },
-    );
+    await sendMessage(userId, conversationId, chatListingSwitchMessage(listingMeta.listingTitle), {
+      kind: "system",
+      createdAt: tCard,
+    });
   }
 
   const rawText = (input.text || "").trim();
@@ -524,9 +488,7 @@ export async function startConversation(
       })
     : "";
 
-  const textToSend = isGenericOpener
-    ? categoryAware || rawText
-    : rawText;
+  const textToSend = isGenericOpener ? categoryAware || rawText : rawText;
 
   if (textToSend) {
     const sent = await sendMessage(userId, conversationId, textToSend, {
@@ -542,11 +504,7 @@ export async function startConversation(
   };
 }
 
-export async function editMessage(
-  userId: string,
-  messageId: string,
-  text: string,
-) {
+export async function editMessage(userId: string, messageId: string, text: string) {
   if (!mongoose.isValidObjectId(messageId)) {
     throw new AppError(404, "Message not found", "NOT_FOUND");
   }
@@ -562,10 +520,7 @@ export async function editMessage(
     throw new AppError(400, "Deleted messages cannot be edited", "VALIDATION_ERROR");
   }
   const conversation = await Conversation.findById(message.conversation);
-  if (
-    !conversation ||
-    !conversation.participants.some((p) => p.toString() === userId)
-  ) {
+  if (!conversation || !conversation.participants.some((p) => p.toString() === userId)) {
     throw new AppError(404, "Conversation not found", "NOT_FOUND");
   }
 
@@ -612,10 +567,7 @@ export async function deleteMessage(userId: string, messageId: string) {
     throw new AppError(400, "System messages cannot be deleted", "VALIDATION_ERROR");
   }
   const conversation = await Conversation.findById(message.conversation);
-  if (
-    !conversation ||
-    !conversation.participants.some((p) => p.toString() === userId)
-  ) {
+  if (!conversation || !conversation.participants.some((p) => p.toString() === userId)) {
     throw new AppError(404, "Conversation not found", "NOT_FOUND");
   }
 
@@ -643,10 +595,7 @@ export async function deleteConversation(userId: string, conversationId: string)
     throw new AppError(404, "Conversation not found", "NOT_FOUND");
   }
   const conversation = await Conversation.findById(conversationId);
-  if (
-    !conversation ||
-    !conversation.participants.some((p) => p.toString() === userId)
-  ) {
+  if (!conversation || !conversation.participants.some((p) => p.toString() === userId)) {
     throw new AppError(404, "Conversation not found", "NOT_FOUND");
   }
   // Soft-hide for this user by clearing their unread and removing them is too destructive
@@ -656,4 +605,3 @@ export async function deleteConversation(userId: string, conversationId: string)
   await Conversation.deleteOne({ _id: conversation._id });
   return { ok: true as const };
 }
-

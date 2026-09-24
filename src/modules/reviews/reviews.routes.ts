@@ -65,10 +65,7 @@ reviewsRouter.delete(
   "/:id",
   requireAuth,
   asyncHandler(async (req, res) => {
-    const data = await deleteOwnSellerReview(
-      String(req.userId),
-      String(req.params.id),
-    );
+    const data = await deleteOwnSellerReview(String(req.userId), String(req.params.id));
     res.json({ success: true, data });
   }),
 );

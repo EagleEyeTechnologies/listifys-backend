@@ -93,15 +93,11 @@ export function toMeUser(user: InstanceType<typeof User>) {
       ? new Date(user.scheduledDeletionAt).toISOString()
       : null,
     createdAt:
-      (user as InstanceType<typeof User> & { createdAt?: Date }).createdAt?.toISOString?.() ??
-      null,
+      (user as InstanceType<typeof User> & { createdAt?: Date }).createdAt?.toISOString?.() ?? null,
   };
 }
 
-export async function toPublicUser(
-  user: InstanceType<typeof User>,
-  viewerId?: string,
-) {
+export async function toPublicUser(user: InstanceType<typeof User>, viewerId?: string) {
   const stats = await getSellerReviewStats(user._id.toString());
   const listingCount = await Listing.countDocuments({
     seller: user._id,
@@ -121,8 +117,7 @@ export async function toPublicUser(
     location: user.location || "",
     countryCode: user.countryCode || "IN",
     createdAt:
-      (user as InstanceType<typeof User> & { createdAt?: Date }).createdAt?.toISOString?.() ??
-      null,
+      (user as InstanceType<typeof User> & { createdAt?: Date }).createdAt?.toISOString?.() ?? null,
     averageRating: stats.averageRating,
     totalReviews: stats.totalReviews,
     listingCount,
@@ -161,10 +156,7 @@ export async function findUserByIdOrSlug(idOrSlug: string) {
 }
 
 /** Public profile even when the user doc is missing but listings still reference the seller id. */
-export async function getPublicSellerProfile(
-  idOrSlug: string,
-  viewerId?: string,
-) {
+export async function getPublicSellerProfile(idOrSlug: string, viewerId?: string) {
   const user = await findUserByIdOrSlug(idOrSlug);
   if (user && user.isActive) {
     return toPublicUser(user, viewerId);
@@ -209,10 +201,7 @@ export async function getPublicSellerProfile(
   };
 }
 
-export async function updateMe(
-  userId: string,
-  input: z.infer<typeof updateMeSchema>,
-) {
+export async function updateMe(userId: string, input: z.infer<typeof updateMeSchema>) {
   const user = await User.findById(userId);
   if (!user || !user.isActive) {
     throw new AppError(401, "User not found", "UNAUTHORIZED");
@@ -268,11 +257,7 @@ export async function requestEmailChange(userId: string, emailRaw: string) {
   return issueOtp("email", email);
 }
 
-export async function verifyEmailChange(
-  userId: string,
-  emailRaw: string,
-  code: string,
-) {
+export async function verifyEmailChange(userId: string, emailRaw: string, code: string) {
   const email = emailRaw.trim().toLowerCase();
   await verifyOtp("email", email, code);
   const user = await User.findById(userId);
@@ -291,11 +276,7 @@ export async function verifyEmailChange(
   return toMeUser(user);
 }
 
-export async function requestPhoneChange(
-  userId: string,
-  phone: string,
-  phoneCode: string,
-) {
+export async function requestPhoneChange(userId: string, phone: string, phoneCode: string) {
   let normalized: { phoneCode: string; phone: string };
   try {
     normalized = assertValidNationalPhone(phoneCode, phone);
@@ -332,11 +313,7 @@ export async function verifyPhoneChange(
       "VALIDATION_ERROR",
     );
   }
-  await verifyOtp(
-    "phone",
-    `${normalized.phoneCode}:${normalized.phone}`,
-    code,
-  );
+  await verifyOtp("phone", `${normalized.phoneCode}:${normalized.phone}`, code);
   const user = await User.findById(userId);
   if (!user || !user.isActive) {
     throw new AppError(401, "User not found", "UNAUTHORIZED");
@@ -360,10 +337,7 @@ export async function verifyPhoneChange(
   return toMeUser(user);
 }
 
-async function personFromUser(
-  user: InstanceType<typeof User>,
-  viewerFollowing: string[],
-) {
+async function personFromUser(user: InstanceType<typeof User>, viewerFollowing: string[]) {
   const stats = await getSellerReviewStats(user._id.toString());
   const listingCount = await Listing.countDocuments({
     seller: user._id,
@@ -403,10 +377,7 @@ export async function toggleFollow(viewerId: string, targetId: string) {
   if (viewerId === targetId) {
     throw new AppError(400, "Cannot follow yourself", "VALIDATION_ERROR");
   }
-  const [viewer, target] = await Promise.all([
-    User.findById(viewerId),
-    requireUser(targetId),
-  ]);
+  const [viewer, target] = await Promise.all([User.findById(viewerId), requireUser(targetId)]);
   if (!viewer || !viewer.isActive) {
     throw new AppError(401, "User not found", "UNAUTHORIZED");
   }
@@ -420,14 +391,8 @@ export async function toggleFollow(viewerId: string, targetId: string) {
       (id) => String(id) !== viewerId,
     ) as typeof target.followers;
   } else {
-    viewer.following = [
-      ...(viewer.following || []),
-      target._id,
-    ] as typeof viewer.following;
-    target.followers = [
-      ...(target.followers || []),
-      viewer._id,
-    ] as typeof target.followers;
+    viewer.following = [...(viewer.following || []), target._id] as typeof viewer.following;
+    target.followers = [...(target.followers || []), viewer._id] as typeof target.followers;
   }
   await Promise.all([viewer.save(), target.save()]);
   return {
@@ -438,10 +403,7 @@ export async function toggleFollow(viewerId: string, targetId: string) {
 }
 
 export async function removeFollower(userId: string, followerId: string) {
-  const [user, follower] = await Promise.all([
-    User.findById(userId),
-    User.findById(followerId),
-  ]);
+  const [user, follower] = await Promise.all([User.findById(userId), User.findById(followerId)]);
   if (!user || !user.isActive) {
     throw new AppError(401, "User not found", "UNAUTHORIZED");
   }
@@ -472,8 +434,7 @@ export async function requestAccountDeletion(userId: string) {
       daysRemaining: Math.max(
         0,
         Math.ceil(
-          (new Date(user.scheduledDeletionAt).getTime() - Date.now()) /
-            (24 * 60 * 60 * 1000),
+          (new Date(user.scheduledDeletionAt).getTime() - Date.now()) / (24 * 60 * 60 * 1000),
         ),
       ),
       alreadyScheduled: true,
