@@ -2,10 +2,10 @@
 
 Recommended layout for Listifys:
 
-| Layer | Where |
-|--------|--------|
-| Website (Next.js) | **Amplify** — e.g. `https://next.listifys.com` |
-| API + Socket.IO | **EC2** behind Nginx — e.g. `https://api.listifys.com` |
+| Layer                           | Where                                                    |
+| ------------------------------- | -------------------------------------------------------- |
+| Website (Next.js)               | **Amplify** — e.g. `https://next.listifys.com`           |
+| API + Socket.IO                 | **EC2** behind Nginx — e.g. `https://api.listifys.com`   |
 | Mongo / Redis / S3 / OpenSearch | Existing managed services (already in `.env.production`) |
 
 Render is optional; this path is the production default.

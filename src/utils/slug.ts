@@ -14,12 +14,20 @@ export function slugify(input: string, fallback = "item"): string {
 
 /** Title slug + short unique suffix from Mongo id (stable, collision-resistant). */
 export function listingSlugFrom(title: string, id: string): string {
-  const short = String(id).replace(/[^a-f0-9]/gi, "").slice(-6).toLowerCase() || "item";
+  const short =
+    String(id)
+      .replace(/[^a-f0-9]/gi, "")
+      .slice(-6)
+      .toLowerCase() || "item";
   return `${slugify(title, "listing")}-${short}`;
 }
 
 export function sellerSlugFrom(name: string, id: string): string {
-  const short = String(id).replace(/[^a-f0-9]/gi, "").slice(-6).toLowerCase() || "user";
+  const short =
+    String(id)
+      .replace(/[^a-f0-9]/gi, "")
+      .slice(-6)
+      .toLowerCase() || "user";
   return `${slugify(name, "seller")}-${short}`;
 }
 

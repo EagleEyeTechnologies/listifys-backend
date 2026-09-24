@@ -84,11 +84,7 @@ export function trackSocketOnline(
 /**
  * Remove a socket. If last socket, wait grace period then mark offline.
  */
-export function trackSocketOffline(
-  userId: string,
-  socketId: string,
-  handlers: PresenceHandlers,
-) {
+export function trackSocketOffline(userId: string, socketId: string, handlers: PresenceHandlers) {
   const set = onlineUsers.get(userId);
   if (!set) return;
   set.delete(socketId);

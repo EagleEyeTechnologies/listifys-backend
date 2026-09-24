@@ -24,8 +24,7 @@ const BASE = {
   days: 30,
   trialDays: 7,
   label: "Seller Premium",
-  description:
-    "Monthly membership with free boosts and a Premium seller badge",
+  description: "Monthly membership with free boosts and a Premium seller badge",
   freeBoostsPerMonth: 3,
   perks: [
     {

@@ -6,6 +6,91 @@ import { Listing } from "../listings/listing.model.js";
 import { Conversation } from "../chat/conversation.model.js";
 import { SellerReview } from "../reviews/sellerReview.model.js";
 import { ModerationReport } from "../admin/moderationReport.model.js";
+import { createNotification } from "../notifications/notification.service.js";
+import { env, getAdminEmails } from "../../config/env.js";
+import { logger } from "../../utils/logger.js";
+
+async function notifyReportSubmitted(input: {
+  reportId: string;
+  type: string;
+  subject: string;
+  reason: string;
+  reporterName: string;
+  reporterId: string;
+  duplicate?: boolean;
+}) {
+  const body = input.duplicate
+    ? `Your report on “${input.subject}” was already on file. Our team is still reviewing it.`
+    : `Thanks — we received your report on “${input.subject}” (${input.reason}). Our team will review it.`;
+
+  // Confirmation for the reporter
+  try {
+    await createNotification({
+      userId: input.reporterId,
+      type: "system",
+      title: input.duplicate ? "Report already submitted" : "Report received",
+      body,
+      href: "/notifications",
+    });
+  } catch (err) {
+    logger.warn("Failed to notify reporter about report", {
+      err: err instanceof Error ? err.message : String(err),
+    });
+  }
+
+  const adminEmails = getAdminEmails();
+  if (!adminEmails.length) return;
+
+  const admins = await User.find({
+    email: { $in: adminEmails },
+    isActive: { $ne: false },
+  }).select("_id email");
+
+  const adminBody = `${input.reporterName} reported ${input.type} “${input.subject}”: ${input.reason}`;
+  for (const admin of admins) {
+    try {
+      await createNotification({
+        userId: admin._id.toString(),
+        type: "system",
+        title: input.duplicate ? "Duplicate user report" : "New user report",
+        body: adminBody,
+        href: "/admin/moderation",
+      });
+    } catch {
+      /* best-effort */
+    }
+  }
+
+  if (!env.RESEND_API_KEY || !env.EMAIL_FROM || input.duplicate) return;
+
+  try {
+    await fetch("https://api.resend.com/emails", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${env.RESEND_API_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        from: env.EMAIL_FROM,
+        to: adminEmails,
+        subject: `[Listifys] New ${input.type} report: ${input.subject}`,
+        text: [
+          `Report ID: ${input.reportId}`,
+          `Type: ${input.type}`,
+          `Subject: ${input.subject}`,
+          `Reason: ${input.reason}`,
+          `Reporter: ${input.reporterName}`,
+          "",
+          `Open moderation: ${env.CLIENT_URL}/admin/moderation`,
+        ].join("\n"),
+      }),
+    });
+  } catch (err) {
+    logger.warn("Failed to email admins about report", {
+      err: err instanceof Error ? err.message : String(err),
+    });
+  }
+}
 
 export const createUserReportSchema = z.object({
   type: z.enum(["listing", "user", "image", "chat", "review"]),
@@ -17,11 +102,7 @@ export const createUserReportSchema = z.object({
 
 function priorityFromReason(reason: string): "high" | "medium" | "low" {
   const r = reason.toLowerCase();
-  if (
-    /scam|fraud|harass|threat|illegal|child|weapon|counterfeit|spam|abuse/.test(
-      r,
-    )
-  ) {
+  if (/scam|fraud|harass|threat|illegal|child|weapon|counterfeit|spam|abuse/.test(r)) {
     return "high";
   }
   if (/misleading|fake|inappropriate|offensive|wrong/.test(r)) {
@@ -48,12 +129,10 @@ export async function createUserReport(
   let conversationId: mongoose.Types.ObjectId | undefined;
   let reviewId: mongoose.Types.ObjectId | undefined;
   let imageUrl = input.imageUrl || "";
-  let type = input.type;
+  const type = input.type;
 
   if (input.type === "listing" || input.type === "image") {
-    const listing = await Listing.findById(input.targetId).select(
-      "title seller images status",
-    );
+    const listing = await Listing.findById(input.targetId).select("title seller images status");
     if (!listing) throw new AppError(404, "Listing not found", "NOT_FOUND");
     if (String(listing.seller) === String(reporterId)) {
       throw new AppError(400, "You cannot report your own listing", "VALIDATION_ERROR");
@@ -64,9 +143,7 @@ export async function createUserReport(
     if (input.type === "image") {
       imageUrl =
         imageUrl ||
-        (Array.isArray(listing.images) && listing.images[0]
-          ? String(listing.images[0])
-          : "");
+        (Array.isArray(listing.images) && listing.images[0] ? String(listing.images[0]) : "");
     }
   } else if (input.type === "user") {
     const user = await User.findById(input.targetId).select("name email");
@@ -123,6 +200,15 @@ export async function createUserReport(
     createdAt: { $gte: since },
   });
   if (existing) {
+    void notifyReportSubmitted({
+      reportId: existing._id.toString(),
+      type,
+      subject: existing.subject || subject || "Report",
+      reason: existing.reason || input.reason.trim(),
+      reporterName,
+      reporterId,
+      duplicate: true,
+    });
     return {
       id: existing._id.toString(),
       status: existing.status,
@@ -146,6 +232,15 @@ export async function createUserReport(
     status: "open",
     priority: priorityFromReason(input.reason),
     source: "user_report",
+  });
+
+  void notifyReportSubmitted({
+    reportId: doc._id.toString(),
+    type,
+    subject,
+    reason: input.reason.trim(),
+    reporterName,
+    reporterId,
   });
 
   return { id: doc._id.toString(), status: doc.status, duplicate: false };
@@ -205,15 +300,9 @@ export async function createAdminFlagReport(input: {
     type: input.type,
     subject: input.subject,
     subjectId: new mongoose.Types.ObjectId(input.subjectId),
-    listingId: input.listingId
-      ? new mongoose.Types.ObjectId(input.listingId)
-      : undefined,
-    userId: input.userId
-      ? new mongoose.Types.ObjectId(input.userId)
-      : undefined,
-    reviewId: input.reviewId
-      ? new mongoose.Types.ObjectId(input.reviewId)
-      : undefined,
+    listingId: input.listingId ? new mongoose.Types.ObjectId(input.listingId) : undefined,
+    userId: input.userId ? new mongoose.Types.ObjectId(input.userId) : undefined,
+    reviewId: input.reviewId ? new mongoose.Types.ObjectId(input.reviewId) : undefined,
     conversationId: input.conversationId
       ? new mongoose.Types.ObjectId(input.conversationId)
       : undefined,

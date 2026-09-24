@@ -12,12 +12,15 @@ import {
 } from "./tokens.js";
 import { AppError } from "../../utils/AppError.js";
 import { absolutizeMediaUrl } from "../../utils/mediaUrl.js";
-import { displayEmail, isApplePrivateRelayEmail, needsPublicEmail, normalizePhoneParts } from "../../utils/phone.js";
-import type { CountryCode } from "../../types/domain.js";
 import {
-  verifyAppleIdentityToken,
-  verifyGoogleIdToken,
-} from "./social.oauth.js";
+  assertValidNationalPhone,
+  displayEmail,
+  isApplePrivateRelayEmail,
+  needsPublicEmail,
+  normalizePhoneParts,
+} from "../../utils/phone.js";
+import type { CountryCode } from "../../types/domain.js";
+import { verifyAppleIdentityToken, verifyGoogleIdToken } from "./social.oauth.js";
 
 export const emailRequestSchema = z.object({
   email: z.string().email(),
@@ -34,6 +37,7 @@ export const emailRegisterSchema = z.object({
   email: z.string().email(),
   password: z.string().min(8).max(128),
   name: z.string().min(1).max(100),
+  code: z.string().min(4).max(8),
   countryCode: z.enum(["US", "CA", "IN"]).optional(),
 });
 
@@ -51,6 +55,7 @@ export const emailResetPasswordSchema = z.object({
 export const phoneRequestSchema = z.object({
   phone: z.string().min(8).max(20),
   phoneCode: z.string().min(1).max(5).default("+91"),
+  purpose: z.enum(["login", "register"]).optional(),
 });
 
 export const phoneVerifySchema = z.object({
@@ -59,6 +64,7 @@ export const phoneVerifySchema = z.object({
   code: z.string().min(4).max(8),
   name: z.string().optional(),
   countryCode: z.enum(["US", "CA", "IN"]).optional(),
+  purpose: z.enum(["login", "register"]).optional(),
 });
 
 export const refreshSchema = z.object({
@@ -113,11 +119,11 @@ async function verifyPassword(hash: string, password: string) {
   }
 }
 
-/** Email register with password (no OTP). */
-export async function registerWithEmail(
-  input: z.infer<typeof emailRegisterSchema>,
-) {
+/** Email register: requires a prior OTP from requestRegisterEmailOtp. */
+export async function registerWithEmail(input: z.infer<typeof emailRegisterSchema>) {
   const email = input.email.trim().toLowerCase();
+  await verifyOtp("email", email, input.code);
+
   const existing = await User.findOne({ email }).select("+passwordHash");
   if (existing?.passwordHash) {
     throw new AppError(409, "Email already registered. Please sign in.", "EMAIL_EXISTS");
@@ -146,6 +152,16 @@ export async function registerWithEmail(
   });
   const tokens = await tokensFor(user._id.toString());
   return { user: publicUser(user), ...tokens };
+}
+
+/** Send OTP before creating an email+password account. */
+export async function requestRegisterEmailOtp(emailRaw: string) {
+  const email = emailRaw.trim().toLowerCase();
+  const existing = await User.findOne({ email }).select("+passwordHash");
+  if (existing?.passwordHash) {
+    throw new AppError(409, "Email already registered. Please sign in.", "EMAIL_EXISTS");
+  }
+  return issueOtp("email", email);
 }
 
 /** Email login with password. */
@@ -182,9 +198,7 @@ export async function requestPasswordResetOtp(email: string) {
 }
 
 /** Verify OTP and set a new password. */
-export async function resetPasswordWithOtp(
-  input: z.infer<typeof emailResetPasswordSchema>,
-) {
+export async function resetPasswordWithOtp(input: z.infer<typeof emailResetPasswordSchema>) {
   const email = input.email.trim().toLowerCase();
   await verifyOtp("email", email, input.code);
   const user = await User.findOne({ email }).select("+passwordHash");
@@ -230,24 +244,71 @@ export async function verifyEmailOtp(input: z.infer<typeof emailVerifySchema>) {
   return { user: publicUser(user), ...tokens };
 }
 
-export async function requestPhoneOtp(phone: string, phoneCode: string) {
-  const target = `${phoneCode}:${phone}`;
-  return issueOtp("phone", target);
+export async function requestPhoneOtp(
+  phone: string,
+  phoneCode: string,
+  purpose: "login" | "register" = "login",
+) {
+  let normalized: { phoneCode: string; phone: string };
+  try {
+    normalized = assertValidNationalPhone(phoneCode, phone);
+  } catch (err) {
+    throw new AppError(
+      400,
+      err instanceof Error ? err.message : "Invalid phone number",
+      "VALIDATION_ERROR",
+    );
+  }
+
+  if (purpose === "register") {
+    const existing =
+      (await User.findOne({
+        phone: normalized.phone,
+        phoneCode: normalized.phoneCode,
+      })) || (await User.findOne({ phone: normalized.phone }));
+    if (existing) {
+      throw new AppError(
+        409,
+        "This mobile number is already registered. Please sign in.",
+        "PHONE_EXISTS",
+      );
+    }
+  }
+
+  return issueOtp("phone", `${normalized.phoneCode}:${normalized.phone}`);
 }
 
 export async function verifyPhoneOtp(input: z.infer<typeof phoneVerifySchema>) {
-  const target = `${input.phoneCode}:${input.phone}`;
+  let normalized: { phoneCode: string; phone: string };
+  try {
+    normalized = assertValidNationalPhone(input.phoneCode, input.phone);
+  } catch (err) {
+    throw new AppError(
+      400,
+      err instanceof Error ? err.message : "Invalid phone number",
+      "VALIDATION_ERROR",
+    );
+  }
+  const target = `${normalized.phoneCode}:${normalized.phone}`;
   await verifyOtp("phone", target, input.code);
 
-  const parts = normalizePhoneParts(input.phoneCode, input.phone);
-  const phoneCode = parts.phoneCode || input.phoneCode;
-  const phone = parts.phone || input.phone;
+  const parts = normalizePhoneParts(normalized.phoneCode, normalized.phone);
+  const phoneCode = parts.phoneCode || normalized.phoneCode;
+  const phone = parts.phone || normalized.phone;
 
   let user =
     (await User.findOne({ phone, phoneCode })) ||
     (await User.findOne({ phone: input.phone })) ||
     (await User.findOne({ phone: `${phoneCode}${phone}` })) ||
     (await User.findOne({ phone: `+${phoneCode.replace("+", "")}${phone}` }));
+
+  if (input.purpose === "register" && user) {
+    throw new AppError(
+      409,
+      "This mobile number is already registered. Please sign in.",
+      "PHONE_EXISTS",
+    );
+  }
 
   if (!user) {
     user = await User.create({
@@ -373,11 +434,7 @@ export async function socialLogin(
         providerId: identity.appleId,
       });
     }
-    if (
-      displayName &&
-      displayName !== "Apple User" &&
-      (!user.name || user.name === "Apple User")
-    ) {
+    if (displayName && displayName !== "Apple User" && (!user.name || user.name === "Apple User")) {
       user.name = displayName;
     }
     if (identity.email && !user.email) user.email = identity.email;

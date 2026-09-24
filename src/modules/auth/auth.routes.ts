@@ -1,4 +1,4 @@
-import { Router } from "express";
+import { Router, type Response } from "express";
 import { asyncHandler } from "../../utils/asyncHandler.js";
 import { authRateLimit } from "../../middleware/rateLimit.js";
 import {
@@ -17,6 +17,7 @@ import {
   requestEmailOtp,
   requestPasswordResetOtp,
   requestPhoneOtp,
+  requestRegisterEmailOtp,
   resetPasswordWithOtp,
   socialLogin,
   socialSchema,
@@ -30,11 +31,7 @@ export const authRouter = Router();
 
 authRouter.use(authRateLimit);
 
-function setAuthCookies(
-  res: import("express").Response,
-  accessToken: string,
-  refreshToken: string,
-) {
+function setAuthCookies(res: Response, accessToken: string, refreshToken: string) {
   const secure = env.NODE_ENV === "production";
   res.cookie("accessToken", accessToken, {
     httpOnly: true,
@@ -60,6 +57,18 @@ authRouter.post(
     const data = await registerWithEmail(parsed.data);
     setAuthCookies(res, data.accessToken, data.refreshToken);
     res.status(201).json({ success: true, data });
+  }),
+);
+
+authRouter.post(
+  "/register/otp/request",
+  asyncHandler(async (req, res) => {
+    const parsed = emailRequestSchema.safeParse(req.body);
+    if (!parsed.success) {
+      throw new AppError(400, "Invalid email", "VALIDATION_ERROR", parsed.error.flatten());
+    }
+    const result = await requestRegisterEmailOtp(parsed.data.email);
+    res.json({ success: true, data: result });
   }),
 );
 
@@ -133,7 +142,11 @@ authRouter.post(
     if (!parsed.success) {
       throw new AppError(400, "Invalid phone", "VALIDATION_ERROR", parsed.error.flatten());
     }
-    const result = await requestPhoneOtp(parsed.data.phone, parsed.data.phoneCode);
+    const result = await requestPhoneOtp(
+      parsed.data.phone,
+      parsed.data.phoneCode,
+      parsed.data.purpose || "login",
+    );
     res.json({ success: true, data: result });
   }),
 );
@@ -155,11 +168,9 @@ authRouter.post(
   "/refresh",
   asyncHandler(async (req, res) => {
     const bodyToken = refreshSchema.safeParse(req.body);
-    const cookieToken = (req as typeof req & { cookies?: Record<string, string> })
-      .cookies?.refreshToken;
-    const refreshToken = bodyToken.success
-      ? bodyToken.data.refreshToken
-      : cookieToken;
+    const cookieToken = (req as typeof req & { cookies?: Record<string, string> }).cookies
+      ?.refreshToken;
+    const refreshToken = bodyToken.success ? bodyToken.data.refreshToken : cookieToken;
     if (!refreshToken) {
       throw new AppError(400, "refreshToken required", "VALIDATION_ERROR");
     }
@@ -173,8 +184,8 @@ authRouter.post(
   "/logout",
   asyncHandler(async (req, res) => {
     const bodyToken = refreshSchema.safeParse(req.body);
-    const cookieToken = (req as typeof req & { cookies?: Record<string, string> })
-      .cookies?.refreshToken;
+    const cookieToken = (req as typeof req & { cookies?: Record<string, string> }).cookies
+      ?.refreshToken;
     await logout(bodyToken.success ? bodyToken.data.refreshToken : cookieToken);
     res.clearCookie("accessToken");
     res.clearCookie("refreshToken");

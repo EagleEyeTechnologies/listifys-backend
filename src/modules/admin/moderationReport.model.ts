@@ -49,14 +49,9 @@ const moderationReportSchema = new Schema(
 
 moderationReportSchema.index({ status: 1, createdAt: -1 });
 
-export type ModerationReportDocument = InferSchemaType<
-  typeof moderationReportSchema
-> & {
+export type ModerationReportDocument = InferSchemaType<typeof moderationReportSchema> & {
   _id: mongoose.Types.ObjectId;
   createdAt: Date;
 };
 
-export const ModerationReport = mongoose.model(
-  "ModerationReport",
-  moderationReportSchema,
-);
+export const ModerationReport = mongoose.model("ModerationReport", moderationReportSchema);

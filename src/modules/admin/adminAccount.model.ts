@@ -22,9 +22,7 @@ const adminAccountSchema = new Schema(
   { timestamps: true },
 );
 
-export type AdminAccountDocument = InferSchemaType<
-  typeof adminAccountSchema
-> & {
+export type AdminAccountDocument = InferSchemaType<typeof adminAccountSchema> & {
   _id: mongoose.Types.ObjectId;
   createdAt: Date;
 };

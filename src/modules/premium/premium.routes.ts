@@ -4,10 +4,7 @@ import { asyncHandler } from "../../utils/asyncHandler.js";
 import { requireAuth } from "../../middleware/auth.js";
 import { AppError } from "../../utils/AppError.js";
 import { env } from "../../config/env.js";
-import {
-  formatPremiumMinor,
-  getPremiumPlan,
-} from "./premium.plans.js";
+import { formatPremiumMinor, getPremiumPlan } from "./premium.plans.js";
 import {
   createPendingPremiumCheckout,
   expireDuePremium,

@@ -16,14 +16,7 @@ const sellerSubscriptionSchema = new Schema(
     planKey: { type: String, required: true, default: "monthly" },
     status: {
       type: String,
-      enum: [
-        "pending_payment",
-        "trialing",
-        "active",
-        "cancelled",
-        "expired",
-        "refunded",
-      ],
+      enum: ["pending_payment", "trialing", "active", "cancelled", "expired", "refunded"],
       default: "pending_payment",
       index: true,
     },
@@ -59,13 +52,8 @@ const sellerSubscriptionSchema = new Schema(
 sellerSubscriptionSchema.index({ userId: 1, status: 1 });
 sellerSubscriptionSchema.index({ status: 1, currentPeriodEnd: 1 });
 
-export type SellerSubscriptionDocument = InferSchemaType<
-  typeof sellerSubscriptionSchema
-> & {
+export type SellerSubscriptionDocument = InferSchemaType<typeof sellerSubscriptionSchema> & {
   _id: mongoose.Types.ObjectId;
 };
 
-export const SellerSubscription = mongoose.model(
-  "SellerSubscription",
-  sellerSubscriptionSchema,
-);
+export const SellerSubscription = mongoose.model("SellerSubscription", sellerSubscriptionSchema);

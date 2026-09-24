@@ -7,21 +7,11 @@ import { Address } from "../users/address.model.js";
 import { User } from "../users/user.model.js";
 import { AppError } from "../../utils/AppError.js";
 import { absolutizeMediaUrl } from "../../utils/mediaUrl.js";
-import {
-  displayEmail,
-  formatPhoneDisplay,
-  isSyntheticEmail,
-} from "../../utils/phone.js";
+import { displayEmail, formatPhoneDisplay, isSyntheticEmail } from "../../utils/phone.js";
 import { countOpenModerationReports } from "./admin.platform.service.js";
 
-function isOAuthVerified(
-  providers?: Array<{ provider?: string }> | null,
-): boolean {
-  return Boolean(
-    providers?.some(
-      (p) => p.provider === "google" || p.provider === "apple",
-    ),
-  );
+function isOAuthVerified(providers?: Array<{ provider?: string }> | null): boolean {
+  return Boolean(providers?.some((p) => p.provider === "google" || p.provider === "apple"));
 }
 
 function formatAddressLabel(a: {
@@ -86,9 +76,7 @@ function formatPrice(price: number, currency: string, countryCode: string) {
   return `${currency} ${Number(price).toLocaleString()}`;
 }
 
-function lastSeenFromDevices(
-  devices?: Array<{ lastSeenAt?: Date | null }> | null,
-) {
+function lastSeenFromDevices(devices?: Array<{ lastSeenAt?: Date | null }> | null) {
   if (!devices?.length) return null;
   let latest: Date | null = null;
   for (const d of devices) {
@@ -100,9 +88,7 @@ function lastSeenFromDevices(
 }
 
 export async function getAdminMe(userId: string) {
-  const user = await User.findById(userId).select(
-    "email name avatar countryCode isActive",
-  );
+  const user = await User.findById(userId).select("email name avatar countryCode isActive");
   if (!user) throw new AppError(404, "User not found", "NOT_FOUND");
   return {
     id: user._id.toString(),
@@ -122,9 +108,7 @@ export const adminUsersQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(100).default(20),
 });
 
-export async function listAdminUsers(
-  query: z.infer<typeof adminUsersQuerySchema>,
-) {
+export async function listAdminUsers(query: z.infer<typeof adminUsersQuerySchema>) {
   const filter: Record<string, unknown> = {};
   if (query.market !== "all") filter.countryCode = query.market;
   if (query.status === "active") filter.isActive = true;
@@ -150,11 +134,7 @@ export async function listAdminUsers(
   const skip = (query.page - 1) * query.limit;
   const [total, users] = await Promise.all([
     User.countDocuments(filter),
-    User.find(filter)
-      .sort({ createdAt: -1 })
-      .skip(skip)
-      .limit(query.limit)
-      .lean(),
+    User.find(filter).sort({ createdAt: -1 }).skip(skip).limit(query.limit).lean(),
   ]);
 
   const ids = users.map((u) => u._id);
@@ -191,9 +171,7 @@ export async function listAdminUsers(
       },
     ]),
   ]);
-  const countMap = new Map(
-    listingCounts.map((r) => [r._id.toString(), r.count]),
-  );
+  const countMap = new Map(listingCounts.map((r) => [r._id.toString(), r.count]));
   const addressMap = new Map<string, string>();
   for (const a of addresses as Array<{
     user: mongoose.Types.ObjectId;
@@ -211,24 +189,16 @@ export async function listAdminUsers(
   );
 
   const items = users.map((u) => {
-    const lastSeen = lastSeenFromDevices(
-      u.devices as Array<{ lastSeenAt?: Date }> | undefined,
-    );
+    const lastSeen = lastSeenFromDevices(u.devices as Array<{ lastSeenAt?: Date }> | undefined);
     const uid = u._id.toString();
-    const location =
-      addressMap.get(uid) ||
-      (u.location || "").trim() ||
-      cityMap.get(uid) ||
-      "—";
+    const location = addressMap.get(uid) || (u.location || "").trim() || cityMap.get(uid) || "—";
     const emailRaw = u.email || "";
     return {
       id: uid,
       name: u.name || "—",
       email: displayEmail(emailRaw),
       phone: formatPhoneDisplay(u.phoneCode, u.phone),
-      verified: isOAuthVerified(
-        u.providers as Array<{ provider?: string }> | undefined,
-      ),
+      verified: isOAuthVerified(u.providers as Array<{ provider?: string }> | undefined),
       premium: Boolean(u.sellerPremium?.isPremiumSeller),
       market: (u.countryCode || "IN") as "IN" | "US" | "CA",
       location,
@@ -236,10 +206,7 @@ export async function listAdminUsers(
       status: u.isActive ? ("Active" as const) : ("Inactive" as const),
       joinedOn: formatDate(u.createdAt as Date | undefined),
       lastActive: relativeTime(lastSeen),
-      avatar: initials(
-        u.name || "",
-        isSyntheticEmail(emailRaw) ? undefined : emailRaw,
-      ),
+      avatar: initials(u.name || "", isSyntheticEmail(emailRaw) ? undefined : emailRaw),
       avatarUrl: absolutizeMediaUrl(u.avatar),
     };
   });
@@ -257,10 +224,7 @@ export const patchAdminUserSchema = z.object({
   isActive: z.boolean().optional(),
 });
 
-export async function patchAdminUser(
-  id: string,
-  body: z.infer<typeof patchAdminUserSchema>,
-) {
+export async function patchAdminUser(id: string, body: z.infer<typeof patchAdminUserSchema>) {
   if (!mongoose.isValidObjectId(id)) {
     throw new AppError(400, "Invalid user id", "VALIDATION_ERROR");
   }
@@ -291,9 +255,7 @@ export const adminListingsQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(100).default(20),
 });
 
-export async function listAdminListings(
-  query: z.infer<typeof adminListingsQuerySchema>,
-) {
+export async function listAdminListings(query: z.infer<typeof adminListingsQuerySchema>) {
   const filter: Record<string, unknown> = {};
   if (query.category !== "all") filter.category = query.category;
   if (query.intent !== "all") filter.intent = query.intent;
@@ -302,23 +264,13 @@ export async function listAdminListings(
   if (query.q?.trim()) {
     const q = query.q.trim();
     const rx = new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
-    filter.$or = [
-      { title: rx },
-      { sellerName: rx },
-      { location: rx },
-      { city: rx },
-      { slug: rx },
-    ];
+    filter.$or = [{ title: rx }, { sellerName: rx }, { location: rx }, { city: rx }, { slug: rx }];
   }
 
   const skip = (query.page - 1) * query.limit;
   const [total, listings] = await Promise.all([
     Listing.countDocuments(filter),
-    Listing.find(filter)
-      .sort({ createdAt: -1 })
-      .skip(skip)
-      .limit(query.limit)
-      .lean(),
+    Listing.find(filter).sort({ createdAt: -1 }).skip(skip).limit(query.limit).lean(),
   ]);
 
   const items = listings.map((l) => ({
@@ -388,25 +340,15 @@ export async function getAdminListing(id: string) {
     location: listing.location || "",
     city: listing.city || "",
     countryCode: (listing.countryCode || "IN") as "IN" | "US" | "CA",
-    status: listing.status as
-      | "active"
-      | "sold"
-      | "paused"
-      | "expired"
-      | "removed",
+    status: listing.status as "active" | "sold" | "paused" | "expired" | "removed",
     featured: Boolean(listing.featured),
-    images: Array.isArray(listing.images)
-      ? listing.images.map((u) => absolutizeMediaUrl(u))
-      : [],
+    images: Array.isArray(listing.images) ? listing.images.map((u) => absolutizeMediaUrl(u)) : [],
     sellerName: listing.sellerName || "",
     postedOn: formatDate(listing.createdAt as Date | undefined),
   };
 }
 
-export async function patchAdminListing(
-  id: string,
-  body: z.infer<typeof patchAdminListingSchema>,
-) {
+export async function patchAdminListing(id: string, body: z.infer<typeof patchAdminListingSchema>) {
   if (!mongoose.isValidObjectId(id)) {
     throw new AppError(400, "Invalid listing id", "VALIDATION_ERROR");
   }
@@ -533,15 +475,15 @@ export async function getAdminStats() {
   ]);
 
   const monetizationMinor = monetizationAgg[0]?.total || 0;
-  const purposeMap = Object.fromEntries(
-    purposeAgg.map((p) => [p._id, p.total]),
-  ) as Record<string, number>;
+  const purposeMap = Object.fromEntries(purposeAgg.map((p) => [p._id, p.total])) as Record<
+    string,
+    number
+  >;
   const purposeTotal =
     (purposeMap.boost || 0) +
     (purposeMap.premium_subscription || 0) +
     (purposeMap.event_ticket || 0);
-  const pct = (n: number) =>
-    purposeTotal > 0 ? Math.round((n / purposeTotal) * 100) : 0;
+  const pct = (n: number) => (purposeTotal > 0 ? Math.round((n / purposeTotal) * 100) : 0);
 
   const monthNames = [
     "Jan",
@@ -594,7 +536,12 @@ export async function getAdminStats() {
         : "₹0",
     monetizationMinor,
     paymentsByPurpose: [
-      { name: "Boost", value: pct(purposeMap.boost || 0), color: "#2563eb", amountMinor: purposeMap.boost || 0 },
+      {
+        name: "Boost",
+        value: pct(purposeMap.boost || 0),
+        color: "#2563eb",
+        amountMinor: purposeMap.boost || 0,
+      },
       {
         name: "Premium",
         value: pct(purposeMap.premium_subscription || 0),
@@ -619,10 +566,7 @@ export async function getAdminStats() {
         email: displayEmail(emailRaw),
         premium: Boolean(u.sellerPremium?.isPremiumSeller),
         market: (u.countryCode || "IN") as "IN" | "US" | "CA",
-        avatar: initials(
-          u.name || "",
-          isSyntheticEmail(emailRaw) ? undefined : emailRaw,
-        ),
+        avatar: initials(u.name || "", isSyntheticEmail(emailRaw) ? undefined : emailRaw),
         avatarUrl: absolutizeMediaUrl(u.avatar),
       };
     }),
@@ -632,10 +576,7 @@ export async function getAdminStats() {
       category: l.category,
       price: formatPrice(l.price, l.currency || "INR", l.countryCode || "IN"),
       status: l.status,
-      thumb:
-        Array.isArray(l.images) && l.images[0]
-          ? absolutizeMediaUrl(l.images[0])
-          : "",
+      thumb: Array.isArray(l.images) && l.images[0] ? absolutizeMediaUrl(l.images[0]) : "",
     })),
   };
 }
@@ -681,26 +622,29 @@ export const pageQuerySchema = z.object({
   status: z.string().optional().default("all"),
 });
 
-export async function listAdminPayments(query: z.infer<typeof pageQuerySchema> & {
-  purpose?: string;
-  provider?: string;
-}) {
+export async function listAdminPayments(
+  query: z.infer<typeof pageQuerySchema> & {
+    purpose?: string;
+    provider?: string;
+  },
+) {
   const filter: Record<string, unknown> = {};
   if (query.status && query.status !== "all") filter.status = query.status;
   if (query.purpose && query.purpose !== "all") filter.purpose = query.purpose;
   if (query.provider && query.provider !== "all") filter.provider = query.provider;
   if (query.q?.trim()) {
     const rx = new RegExp(query.q.trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
-    filter.$or = [
-      { providerOrderId: rx },
-      { providerPaymentId: rx },
-      { planKey: rx },
-    ];
+    filter.$or = [{ providerOrderId: rx }, { providerPaymentId: rx }, { planKey: rx }];
   }
   const skip = (query.page - 1) * query.limit;
   const [total, rows, stats] = await Promise.all([
     Payment.countDocuments(filter),
-    Payment.find(filter).sort({ createdAt: -1 }).skip(skip).limit(query.limit).populate("userId", "name email avatar").lean(),
+    Payment.find(filter)
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(query.limit)
+      .populate("userId", "name email avatar")
+      .lean(),
     Payment.aggregate([
       { $match: { createdAt: { $gte: new Date(Date.now() - 30 * 86400000) } } },
       {
@@ -723,7 +667,12 @@ export async function listAdminPayments(query: z.infer<typeof pageQuerySchema> &
 
   return {
     items: rows.map((p) => {
-      const user = p.userId as { name?: string; email?: string; avatar?: string; _id?: { toString(): string } } | null;
+      const user = p.userId as {
+        name?: string;
+        email?: string;
+        avatar?: string;
+        _id?: { toString(): string };
+      } | null;
       return {
         id: p._id.toString(),
         user: user?.name || user?.email || "—",
@@ -743,7 +692,11 @@ export async function listAdminPayments(query: z.infer<typeof pageQuerySchema> &
                 : p.status === "refunded"
                   ? "Refunded"
                   : String(p.status),
-        datetime: formatDate(p.createdAt as Date) + (p.createdAt ? `, ${(p.createdAt as Date).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" })}` : ""),
+        datetime:
+          formatDate(p.createdAt as Date) +
+          (p.createdAt
+            ? `, ${(p.createdAt as Date).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" })}`
+            : ""),
       };
     }),
     page: query.page,
@@ -767,7 +720,14 @@ export async function listAdminBoosts(query: z.infer<typeof pageQuerySchema>) {
   const { BoostCampaign } = await import("../boost/boostCampaign.model.js");
   const filter: Record<string, unknown> = {};
   if (query.status && query.status !== "all") {
-    filter.status = query.status === "Active" ? "active" : query.status === "Expired" ? "expired" : query.status === "Scheduled" ? "pending_payment" : query.status.toLowerCase();
+    filter.status =
+      query.status === "Active"
+        ? "active"
+        : query.status === "Expired"
+          ? "expired"
+          : query.status === "Scheduled"
+            ? "pending_payment"
+            : query.status.toLowerCase();
   }
   if (query.q?.trim()) {
     const rx = new RegExp(query.q.trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
@@ -776,11 +736,21 @@ export async function listAdminBoosts(query: z.infer<typeof pageQuerySchema>) {
   const skip = (query.page - 1) * query.limit;
   const [total, rows, active, campaigns30, revenueAgg] = await Promise.all([
     BoostCampaign.countDocuments(filter),
-    BoostCampaign.find(filter).sort({ createdAt: -1 }).skip(skip).limit(query.limit).populate("userId", "name email").lean(),
+    BoostCampaign.find(filter)
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(query.limit)
+      .populate("userId", "name email")
+      .lean(),
     BoostCampaign.countDocuments({ status: "active" }),
     BoostCampaign.countDocuments({ createdAt: { $gte: new Date(Date.now() - 30 * 86400000) } }),
     BoostCampaign.aggregate([
-      { $match: { status: { $in: ["active", "expired"] }, createdAt: { $gte: new Date(Date.now() - 30 * 86400000) } } },
+      {
+        $match: {
+          status: { $in: ["active", "expired"] },
+          createdAt: { $gte: new Date(Date.now() - 30 * 86400000) },
+        },
+      },
       { $group: { _id: null, total: { $sum: "$totalMinor" } } },
     ]),
   ]);
@@ -833,7 +803,12 @@ export async function listAdminPremium(query: z.infer<typeof pageQuerySchema>) {
   const skip = (query.page - 1) * query.limit;
   const [total, rows, active, trial, cancelled30] = await Promise.all([
     SellerSubscription.countDocuments(filter),
-    SellerSubscription.find(filter).sort({ createdAt: -1 }).skip(skip).limit(query.limit).populate("userId", "name email avatar").lean(),
+    SellerSubscription.find(filter)
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(query.limit)
+      .populate("userId", "name email avatar")
+      .lean(),
     SellerSubscription.countDocuments({ status: "active" }),
     SellerSubscription.countDocuments({ status: "trialing" }),
     SellerSubscription.countDocuments({
@@ -860,9 +835,12 @@ export async function listAdminPremium(query: z.infer<typeof pageQuerySchema>) {
                 : s.status === "expired"
                   ? "Expired"
                   : String(s.status),
-        started: formatDate(s.activatedAt as Date | undefined) || formatDate(s.createdAt as Date | undefined),
+        started:
+          formatDate(s.activatedAt as Date | undefined) ||
+          formatDate(s.createdAt as Date | undefined),
         renews: formatDate(s.currentPeriodEnd as Date | undefined),
-        amount: s.status === "trialing" ? "Free trial" : moneyLabel(s.totalMinor, s.currency) + "/mo",
+        amount:
+          s.status === "trialing" ? "Free trial" : moneyLabel(s.totalMinor, s.currency) + "/mo",
       };
     }),
     page: query.page,
@@ -893,7 +871,12 @@ export async function listAdminEventBookings(query: z.infer<typeof pageQuerySche
   const since30 = new Date(Date.now() - 30 * 86400000);
   const [total, rows, bookings30, ticketsAgg, revenueAgg, cancelled] = await Promise.all([
     EventBooking.countDocuments(filter),
-    EventBooking.find(filter).sort({ createdAt: -1 }).skip(skip).limit(query.limit).populate("userId", "name email avatar").lean(),
+    EventBooking.find(filter)
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(query.limit)
+      .populate("userId", "name email avatar")
+      .lean(),
     EventBooking.countDocuments({ createdAt: { $gte: since30 } }),
     EventBooking.aggregate([
       { $match: { status: "confirmed", createdAt: { $gte: since30 } } },
@@ -945,7 +928,9 @@ export async function listAdminEventBookings(query: z.infer<typeof pageQuerySche
   };
 }
 
-export async function listAdminReviews(query: z.infer<typeof pageQuerySchema> & { rating?: string }) {
+export async function listAdminReviews(
+  query: z.infer<typeof pageQuerySchema> & { rating?: string },
+) {
   const { SellerReview } = await import("../reviews/sellerReview.model.js");
   const filter: Record<string, unknown> = {};
   if (query.status && query.status !== "all") {
@@ -992,7 +977,8 @@ export async function listAdminReviews(query: z.infer<typeof pageQuerySchema> & 
         rating: r.rating,
         comment: r.comment,
         date: formatDate(r.createdAt as Date | undefined),
-        status: r.status === "published" ? "Visible" : r.status === "hidden" ? "Hidden" : "Reported",
+        status:
+          r.status === "published" ? "Visible" : r.status === "hidden" ? "Hidden" : "Reported",
       };
     }),
     page: query.page,
@@ -1015,8 +1001,7 @@ export const patchAdminReviewSchema = z.object({
 export async function patchAdminReview(id: string, body: z.infer<typeof patchAdminReviewSchema>) {
   const { SellerReview } = await import("../reviews/sellerReview.model.js");
   if (!mongoose.isValidObjectId(id)) throw new AppError(400, "Invalid id", "VALIDATION_ERROR");
-  const review = await SellerReview.findById(id)
-    .populate("reviewer", "name email");
+  const review = await SellerReview.findById(id).populate("reviewer", "name email");
   if (!review) throw new AppError(404, "Review not found", "NOT_FOUND");
   review.status = body.status;
   await review.save();

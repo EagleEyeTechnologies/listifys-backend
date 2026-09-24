@@ -23,8 +23,7 @@ function stringifyData(obj: Record<string, unknown> = {}) {
 function resolveServiceAccount(): Record<string, unknown> | null {
   const saPathRaw =
     env.FIREBASE_SERVICE_ACCOUNT_PATH ||
-    (env.FIREBASE_SERVICE_ACCOUNT_JSON &&
-    !env.FIREBASE_SERVICE_ACCOUNT_JSON.trim().startsWith("{")
+    (env.FIREBASE_SERVICE_ACCOUNT_JSON && !env.FIREBASE_SERVICE_ACCOUNT_JSON.trim().startsWith("{")
       ? env.FIREBASE_SERVICE_ACCOUNT_JSON
       : null);
 
@@ -45,27 +44,17 @@ function resolveServiceAccount(): Record<string, unknown> | null {
     ].filter(Boolean) as string[];
     const resolved = candidates.find((p) => fs.existsSync(p));
     if (!resolved) return null;
-    return JSON.parse(fs.readFileSync(resolved, "utf8")) as Record<
-      string,
-      unknown
-    >;
+    return JSON.parse(fs.readFileSync(resolved, "utf8")) as Record<string, unknown>;
   }
 
   if (
     env.FIREBASE_SERVICE_ACCOUNT_JSON &&
     env.FIREBASE_SERVICE_ACCOUNT_JSON.trim().startsWith("{")
   ) {
-    return JSON.parse(env.FIREBASE_SERVICE_ACCOUNT_JSON) as Record<
-      string,
-      unknown
-    >;
+    return JSON.parse(env.FIREBASE_SERVICE_ACCOUNT_JSON) as Record<string, unknown>;
   }
 
-  if (
-    env.FIREBASE_PROJECT_ID &&
-    env.FIREBASE_CLIENT_EMAIL &&
-    env.FIREBASE_PRIVATE_KEY
-  ) {
+  if (env.FIREBASE_PROJECT_ID && env.FIREBASE_CLIENT_EMAIL && env.FIREBASE_PRIVATE_KEY) {
     return {
       project_id: env.FIREBASE_PROJECT_ID,
       client_email: env.FIREBASE_CLIENT_EMAIL,

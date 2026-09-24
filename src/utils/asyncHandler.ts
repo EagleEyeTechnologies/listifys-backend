@@ -1,10 +1,6 @@
 import type { NextFunction, Request, Response } from "express";
 
-type AsyncRoute = (
-  req: Request,
-  res: Response,
-  next: NextFunction,
-) => Promise<unknown>;
+type AsyncRoute = (req: Request, res: Response, next: NextFunction) => Promise<unknown>;
 
 export function asyncHandler(fn: AsyncRoute) {
   return (req: Request, res: Response, next: NextFunction) => {

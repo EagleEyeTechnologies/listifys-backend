@@ -20,9 +20,7 @@ export function verifyRazorpaySignature(input: {
 }) {
   if (!env.RAZORPAY_KEY_SECRET) return false;
   const body = `${input.orderId}|${input.paymentId}`;
-  const expected = createHmac("sha256", env.RAZORPAY_KEY_SECRET)
-    .update(body)
-    .digest("hex");
+  const expected = createHmac("sha256", env.RAZORPAY_KEY_SECRET).update(body).digest("hex");
   return safeEqual(expected, input.signature);
 }
 
@@ -84,15 +82,9 @@ async function recordWebhook(input: {
 
 export async function handleRazorpayWebhook(rawBody: Buffer, signature: string) {
   if (!env.RAZORPAY_WEBHOOK_SECRET) {
-    throw new AppError(
-      503,
-      "Razorpay webhook not configured",
-      "WEBHOOK_UNAVAILABLE",
-    );
+    throw new AppError(503, "Razorpay webhook not configured", "WEBHOOK_UNAVAILABLE");
   }
-  const expected = createHmac("sha256", env.RAZORPAY_WEBHOOK_SECRET)
-    .update(rawBody)
-    .digest("hex");
+  const expected = createHmac("sha256", env.RAZORPAY_WEBHOOK_SECRET).update(rawBody).digest("hex");
   if (!safeEqual(expected, signature)) {
     throw new AppError(400, "Invalid webhook signature", "INVALID_SIGNATURE");
   }
@@ -148,11 +140,7 @@ export async function handleRazorpayWebhook(rawBody: Buffer, signature: string) 
   }
 
   try {
-    if (
-      event === "payment.captured" ||
-      event === "order.paid" ||
-      entity?.status === "captured"
-    ) {
+    if (event === "payment.captured" || event === "order.paid" || entity?.status === "captured") {
       await activateForPayment(payment._id.toString());
     } else if (event === "refund.processed") {
       await refundForPayment(payment._id.toString());
@@ -181,11 +169,7 @@ export async function handleRazorpayWebhook(rawBody: Buffer, signature: string) 
 
 export async function handleStripeWebhook(rawBody: Buffer, signature: string) {
   if (!env.STRIPE_WEBHOOK_SECRET || !env.STRIPE_SECRET_KEY) {
-    throw new AppError(
-      503,
-      "Stripe webhook not configured",
-      "WEBHOOK_UNAVAILABLE",
-    );
+    throw new AppError(503, "Stripe webhook not configured", "WEBHOOK_UNAVAILABLE");
   }
 
   const parts = Object.fromEntries(
@@ -198,9 +182,7 @@ export async function handleStripeWebhook(rawBody: Buffer, signature: string) {
     throw new AppError(400, "Invalid Stripe signature header", "INVALID_SIGNATURE");
   }
   const signed = `${parts.t}.${rawBody.toString("utf8")}`;
-  const expected = createHmac("sha256", env.STRIPE_WEBHOOK_SECRET)
-    .update(signed)
-    .digest("hex");
+  const expected = createHmac("sha256", env.STRIPE_WEBHOOK_SECRET).update(signed).digest("hex");
   if (!safeEqual(expected, parts.v1)) {
     throw new AppError(400, "Invalid Stripe signature", "INVALID_SIGNATURE");
   }
@@ -279,22 +261,15 @@ export async function confirmStripePaymentIntent(paymentIntentId: string) {
   if (!env.STRIPE_SECRET_KEY) {
     throw new AppError(503, "Stripe not configured", "PAYMENTS_UNAVAILABLE");
   }
-  const res = await fetch(
-    `https://api.stripe.com/v1/payment_intents/${paymentIntentId}`,
-    {
-      headers: { Authorization: `Bearer ${env.STRIPE_SECRET_KEY}` },
-    },
-  );
+  const res = await fetch(`https://api.stripe.com/v1/payment_intents/${paymentIntentId}`, {
+    headers: { Authorization: `Bearer ${env.STRIPE_SECRET_KEY}` },
+  });
   if (!res.ok) {
     throw new AppError(502, "Unable to fetch payment intent", "PAYMENT_ERROR");
   }
   const intent = (await res.json()) as { id: string; status: string };
   if (intent.status !== "succeeded") {
-    throw new AppError(
-      400,
-      `Payment not completed (${intent.status})`,
-      "PAYMENT_PENDING",
-    );
+    throw new AppError(400, `Payment not completed (${intent.status})`, "PAYMENT_PENDING");
   }
 
   const payment = await Payment.findOne({

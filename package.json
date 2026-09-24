@@ -11,7 +11,13 @@
     "start": "node dist/index.js",
     "start:worker": "node dist/worker.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "lint": "tsc -p tsconfig.json --noEmit",
+    "lint": "eslint src --max-warnings 0",
+    "lint:fix": "eslint src --fix",
+    "format": "prettier --write \"src/**/*.{ts,js,json}\" \".github/**/*.{yml,yaml}\" \"*.{json,md,yml,yaml,mts,mjs}\" \"eslint.config.mjs\"",
+    "format:check": "prettier --check \"src/**/*.{ts,js,json}\" \".github/**/*.{yml,yaml}\" \"*.{json,md,yml,yaml,mts,mjs}\" \"eslint.config.mjs\"",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "ci": "npm run typecheck && npm run lint && npm run format:check && npm run test",
     "seed": "npx tsx src/scripts/seed.ts",
     "migrate:stub": "npx tsx src/scripts/migrate-listings.stub.ts",
     "migrate:prod": "tsx src/scripts/migrate-production-to-newlistifysdb.ts",
@@ -20,6 +26,8 @@
     "migrate:verify": "tsx src/scripts/verify-newlistifysdb.ts",
     "chat:decrypt": "npx tsx src/scripts/backfill-chat-decrypt.ts",
     "chat:decrypt:write": "npx tsx src/scripts/backfill-chat-decrypt.ts --write",
+    "chat:merge": "npx tsx src/scripts/merge-chat-conversations.ts",
+    "chat:merge:write": "npx tsx src/scripts/merge-chat-conversations.ts --write",
     "slugs:backfill": "npx tsx src/scripts/backfill-slugs.ts",
     "slugs:backfill:write": "npx tsx src/scripts/backfill-slugs.ts --write"
   },
@@ -57,5 +65,13 @@
     "typescript": "^5.9.3",
     "uuid": "^13.0.0",
     "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "eslint": "^10.11.0",
+    "eslint-config-prettier": "^10.1.8",
+    "prettier": "^3.9.8",
+    "typescript-eslint": "^8.70.1",
+    "vitest": "^5.0.1"
   }
 }

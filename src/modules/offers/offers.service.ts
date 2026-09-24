@@ -5,6 +5,7 @@ import { Listing } from "../listings/listing.model.js";
 import { User } from "../users/user.model.js";
 import { AppError } from "../../utils/AppError.js";
 import { listingHrefFromDoc } from "../chat/listingHref.js";
+import { startConversation } from "../chat/chat.service.js";
 import { createNotification } from "../notifications/notification.service.js";
 import { absolutizeMediaUrl } from "../../utils/mediaUrl.js";
 
@@ -30,17 +31,10 @@ function formatTime(date?: Date | null) {
   return date.toLocaleDateString([], { month: "short", day: "numeric" });
 }
 
-async function serialize(
-  doc: InstanceType<typeof ListingOffer>,
-  viewerId: string,
-) {
-  const [buyer, seller] = await Promise.all([
-    User.findById(doc.buyer),
-    User.findById(doc.seller),
-  ]);
+async function serialize(doc: InstanceType<typeof ListingOffer>, viewerId: string) {
+  const [buyer, seller] = await Promise.all([User.findById(doc.buyer), User.findById(doc.seller)]);
   const createdAt =
-    (doc as InstanceType<typeof ListingOffer> & { createdAt?: Date })
-      .createdAt || new Date();
+    (doc as InstanceType<typeof ListingOffer> & { createdAt?: Date }).createdAt || new Date();
   const viewerIsSeller = doc.seller.toString() === viewerId;
   return {
     id: doc._id.toString(),
@@ -74,10 +68,7 @@ export async function listOffers(userId: string) {
   return Promise.all(rows.map((row) => serialize(row, userId)));
 }
 
-export async function createOffer(
-  buyerId: string,
-  input: z.infer<typeof createOfferSchema>,
-) {
+export async function createOffer(buyerId: string, input: z.infer<typeof createOfferSchema>) {
   if (!mongoose.isValidObjectId(input.listingId)) {
     throw new AppError(400, "Invalid listing", "VALIDATION_ERROR");
   }
@@ -110,9 +101,22 @@ export async function createOffer(
     type: "offer",
     title: `New offer on ${listing.title}`,
     body: `${buyer?.name || "Someone"} offered ${listing.currency} ${input.amount}`,
-    href: "/profile?tab=offers",
+    href: "/profile/offers",
     image: absolutizeMediaUrl(listing.images?.[0] || buyer?.avatar || ""),
   });
+
+  // Reuse the same 1:1 user conversation (listing is context only).
+  try {
+    await startConversation(buyerId, {
+      recipientId: sellerId,
+      listingId: listing._id.toString(),
+      text: `Offer on "${listing.title}": ${listing.currency} ${input.amount}${
+        input.message?.trim() ? `\n\n${input.message.trim()}` : ""
+      }`,
+    });
+  } catch {
+    /* offer already saved; chat notify is best-effort */
+  }
 
   return serialize(offer, buyerId);
 }
@@ -154,7 +158,7 @@ export async function updateOffer(
       offer.status === "countered"
         ? `Seller countered at ${offer.currency} ${offer.counterAmount}`
         : `Your offer was ${offer.status}`,
-    href: "/profile?tab=offers",
+    href: "/profile/offers",
     image: offer.listingImage,
   });
 

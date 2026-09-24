@@ -30,8 +30,7 @@ function maybePersistDecrypted(
 
 export function serializeNotification(doc: InstanceType<typeof Notification>) {
   const createdAt =
-    (doc as InstanceType<typeof Notification> & { createdAt?: Date })
-      .createdAt || new Date();
+    (doc as InstanceType<typeof Notification> & { createdAt?: Date }).createdAt || new Date();
   const title = decryptChatText(doc.title);
   const body = decryptChatText(doc.body);
   maybePersistDecrypted(doc, title, body);
@@ -89,9 +88,7 @@ export async function createNotification(input: {
 }
 
 export async function listNotifications(userId: string) {
-  const rows = await Notification.find({ user: userId })
-    .sort({ createdAt: -1 })
-    .limit(100);
+  const rows = await Notification.find({ user: userId }).sort({ createdAt: -1 }).limit(100);
   return rows.map(serializeNotification);
 }
 
@@ -126,6 +123,11 @@ export async function deleteNotification(userId: string, id: string) {
     throw new AppError(404, "Notification not found", "NOT_FOUND");
   }
   return { id };
+}
+
+export async function clearAllNotifications(userId: string) {
+  const res = await Notification.deleteMany({ user: userId });
+  return { ok: true as const, deleted: res.deletedCount || 0 };
 }
 
 export const createNotificationSchema = z.object({

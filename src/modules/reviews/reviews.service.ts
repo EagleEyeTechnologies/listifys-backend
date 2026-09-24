@@ -49,8 +49,9 @@ export function serializeReview(
     comment: doc.comment,
     status: doc.status,
     createdAt:
-      (doc as InstanceType<typeof SellerReview> & { createdAt?: Date })
-        .createdAt?.toISOString?.() || new Date().toISOString(),
+      (
+        doc as InstanceType<typeof SellerReview> & { createdAt?: Date }
+      ).createdAt?.toISOString?.() || new Date().toISOString(),
   };
 }
 
@@ -66,9 +67,7 @@ export async function listSellerReviews(sellerId: string, limit = 20) {
     .limit(Math.min(limit, 50));
 
   const reviewerIds = [...new Set(rows.map((r) => r.reviewer.toString()))];
-  const reviewers = await User.find({ _id: { $in: reviewerIds } }).select(
-    "name avatar",
-  );
+  const reviewers = await User.find({ _id: { $in: reviewerIds } }).select("name avatar");
   const byId = new Map(reviewers.map((u) => [u._id.toString(), u]));
 
   return {
@@ -106,16 +105,10 @@ export async function createSellerReview(
     if (!mongoose.isValidObjectId(input.listingId)) {
       throw new AppError(400, "Invalid listing id", "VALIDATION_ERROR");
     }
-    const listing = await Listing.findById(input.listingId).select(
-      "seller category",
-    );
+    const listing = await Listing.findById(input.listingId).select("seller category");
     if (!listing) throw new AppError(404, "Listing not found", "NOT_FOUND");
     if (listing.seller.toString() !== input.sellerId) {
-      throw new AppError(
-        400,
-        "Listing does not belong to this seller",
-        "VALIDATION_ERROR",
-      );
+      throw new AppError(400, "Listing does not belong to this seller", "VALIDATION_ERROR");
     }
     listingCategory = listing.category;
   }
@@ -143,12 +136,52 @@ export async function createSellerReview(
       "code" in err &&
       (err as { code?: number }).code === 11000
     ) {
-      throw new AppError(
-        409,
-        "You already reviewed this seller",
-        "ALREADY_REVIEWED",
-      );
+      throw new AppError(409, "You already reviewed this seller", "ALREADY_REVIEWED");
     }
     throw err;
   }
+}
+
+export const updateReviewSchema = z.object({
+  rating: z.coerce.number().int().min(1).max(5).optional(),
+  title: z.string().max(100).optional(),
+  comment: z.string().min(10).max(1000).optional(),
+});
+
+export async function updateOwnSellerReview(
+  reviewerId: string,
+  reviewId: string,
+  input: z.infer<typeof updateReviewSchema>,
+) {
+  if (!mongoose.isValidObjectId(reviewId)) {
+    throw new AppError(400, "Invalid review id", "VALIDATION_ERROR");
+  }
+  const doc = await SellerReview.findById(reviewId);
+  if (!doc) throw new AppError(404, "Review not found", "NOT_FOUND");
+  if (doc.reviewer.toString() !== reviewerId) {
+    throw new AppError(403, "You can only edit your own review", "FORBIDDEN");
+  }
+  if (input.rating != null) doc.rating = input.rating;
+  if (input.title !== undefined) doc.title = input.title.trim();
+  if (input.comment !== undefined) doc.comment = input.comment.trim();
+  await doc.save();
+  const reviewer = await User.findById(reviewerId).select("name avatar");
+  return {
+    review: serializeReview(doc, reviewer),
+    stats: await getSellerReviewStats(doc.seller.toString()),
+  };
+}
+
+export async function deleteOwnSellerReview(reviewerId: string, reviewId: string) {
+  if (!mongoose.isValidObjectId(reviewId)) {
+    throw new AppError(400, "Invalid review id", "VALIDATION_ERROR");
+  }
+  const doc = await SellerReview.findById(reviewId);
+  if (!doc) throw new AppError(404, "Review not found", "NOT_FOUND");
+  if (doc.reviewer.toString() !== reviewerId) {
+    throw new AppError(403, "You can only delete your own review", "FORBIDDEN");
+  }
+  const sellerId = doc.seller.toString();
+  await doc.deleteOne();
+  return { ok: true, stats: await getSellerReviewStats(sellerId) };
 }
