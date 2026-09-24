@@ -141,3 +141,50 @@ export async function createSellerReview(
     throw err;
   }
 }
+
+export const updateReviewSchema = z.object({
+  rating: z.coerce.number().int().min(1).max(5).optional(),
+  title: z.string().max(100).optional(),
+  comment: z.string().min(10).max(1000).optional(),
+});
+
+export async function updateOwnSellerReview(
+  reviewerId: string,
+  reviewId: string,
+  input: z.infer<typeof updateReviewSchema>,
+) {
+  if (!mongoose.isValidObjectId(reviewId)) {
+    throw new AppError(400, "Invalid review id", "VALIDATION_ERROR");
+  }
+  const doc = await SellerReview.findById(reviewId);
+  if (!doc) throw new AppError(404, "Review not found", "NOT_FOUND");
+  if (doc.reviewer.toString() !== reviewerId) {
+    throw new AppError(403, "You can only edit your own review", "FORBIDDEN");
+  }
+  if (input.rating != null) doc.rating = input.rating;
+  if (input.title !== undefined) doc.title = input.title.trim();
+  if (input.comment !== undefined) doc.comment = input.comment.trim();
+  await doc.save();
+  const reviewer = await User.findById(reviewerId).select("name avatar");
+  return {
+    review: serializeReview(doc, reviewer),
+    stats: await getSellerReviewStats(doc.seller.toString()),
+  };
+}
+
+export async function deleteOwnSellerReview(
+  reviewerId: string,
+  reviewId: string,
+) {
+  if (!mongoose.isValidObjectId(reviewId)) {
+    throw new AppError(400, "Invalid review id", "VALIDATION_ERROR");
+  }
+  const doc = await SellerReview.findById(reviewId);
+  if (!doc) throw new AppError(404, "Review not found", "NOT_FOUND");
+  if (doc.reviewer.toString() !== reviewerId) {
+    throw new AppError(403, "You can only delete your own review", "FORBIDDEN");
+  }
+  const sellerId = doc.seller.toString();
+  await doc.deleteOne();
+  return { ok: true, stats: await getSellerReviewStats(sellerId) };
+}

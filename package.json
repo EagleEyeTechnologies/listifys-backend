@@ -26,6 +26,8 @@
     "migrate:verify": "tsx src/scripts/verify-newlistifysdb.ts",
     "chat:decrypt": "npx tsx src/scripts/backfill-chat-decrypt.ts",
     "chat:decrypt:write": "npx tsx src/scripts/backfill-chat-decrypt.ts --write",
+    "chat:merge": "npx tsx src/scripts/merge-chat-conversations.ts",
+    "chat:merge:write": "npx tsx src/scripts/merge-chat-conversations.ts --write",
     "slugs:backfill": "npx tsx src/scripts/backfill-slugs.ts",
     "slugs:backfill:write": "npx tsx src/scripts/backfill-slugs.ts --write"
   },

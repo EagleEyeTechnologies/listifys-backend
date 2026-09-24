@@ -222,6 +222,10 @@ export async function updateListing(
     ...input,
     extras: input.extras !== undefined ? input.extras : listing.extras,
   });
+  if (input.status !== undefined) {
+    listing.status = input.status;
+    listing.markModified("status");
+  }
 
   if (input.lat !== undefined && input.lng !== undefined) {
     listing.coordinates = {
@@ -231,7 +235,11 @@ export async function updateListing(
   }
 
   await listing.save();
-  await indexListing(listing);
+  try {
+    await indexListing(listing);
+  } catch {
+    /* status already persisted; search index can lag */
+  }
   await enqueueListingSideEffect("updated", listing._id.toString());
   return toPublic(listing);
 }

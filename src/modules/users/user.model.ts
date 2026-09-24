@@ -60,6 +60,9 @@ const userSchema = new Schema(
     savedListingIds: { type: [String], default: [] },
     compareListingIds: { type: [String], default: [] },
     isActive: { type: Boolean, default: true },
+    /** When set, account will be permanently deleted after this timestamp (7-day grace). */
+    scheduledDeletionAt: { type: Date, default: null },
+    deletionRequestedAt: { type: Date, default: null },
     sellerPremium: {
       status: { type: String, default: "none" },
       isPremiumSeller: { type: Boolean, default: false },

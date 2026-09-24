@@ -17,6 +17,7 @@ import {
   requestEmailOtp,
   requestPasswordResetOtp,
   requestPhoneOtp,
+  requestRegisterEmailOtp,
   resetPasswordWithOtp,
   socialLogin,
   socialSchema,
@@ -56,6 +57,18 @@ authRouter.post(
     const data = await registerWithEmail(parsed.data);
     setAuthCookies(res, data.accessToken, data.refreshToken);
     res.status(201).json({ success: true, data });
+  }),
+);
+
+authRouter.post(
+  "/register/otp/request",
+  asyncHandler(async (req, res) => {
+    const parsed = emailRequestSchema.safeParse(req.body);
+    if (!parsed.success) {
+      throw new AppError(400, "Invalid email", "VALIDATION_ERROR", parsed.error.flatten());
+    }
+    const result = await requestRegisterEmailOtp(parsed.data.email);
+    res.json({ success: true, data: result });
   }),
 );
 
@@ -129,7 +142,11 @@ authRouter.post(
     if (!parsed.success) {
       throw new AppError(400, "Invalid phone", "VALIDATION_ERROR", parsed.error.flatten());
     }
-    const result = await requestPhoneOtp(parsed.data.phone, parsed.data.phoneCode);
+    const result = await requestPhoneOtp(
+      parsed.data.phone,
+      parsed.data.phoneCode,
+      parsed.data.purpose || "login",
+    );
     res.json({ success: true, data: result });
   }),
 );

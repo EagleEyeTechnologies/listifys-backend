@@ -125,6 +125,11 @@ export async function deleteNotification(userId: string, id: string) {
   return { id };
 }
 
+export async function clearAllNotifications(userId: string) {
+  const res = await Notification.deleteMany({ user: userId });
+  return { ok: true as const, deleted: res.deletedCount || 0 };
+}
+
 export const createNotificationSchema = z.object({
   type: z.enum(NOTIFICATION_TYPES),
   title: z.string().min(1).max(200),
