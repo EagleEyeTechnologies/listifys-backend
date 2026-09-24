@@ -58,16 +58,16 @@ Reports land in `version-1/api/migration-reports/`. After a successful write, po
 
 ## Auth
 
-| Method | Path | Notes |
-|--------|------|--------|
-| POST | `/api/auth/otp/email/request` | `{ email }` — OTP logged in dev |
-| POST | `/api/auth/otp/email/verify` | `{ email, code, name?, countryCode? }` |
-| POST | `/api/auth/otp/phone/request` | `{ phone, phoneCode? }` |
-| POST | `/api/auth/otp/phone/verify` | `{ phone, phoneCode?, code, name?, countryCode? }` |
-| POST | `/api/auth/refresh` | `{ refreshToken }` or cookie |
-| POST | `/api/auth/logout` | |
-| POST | `/api/auth/google` | stub — requires `email` + `idToken` |
-| POST | `/api/auth/apple` | stub — requires `email` + `idToken` |
+| Method | Path                          | Notes                                              |
+| ------ | ----------------------------- | -------------------------------------------------- |
+| POST   | `/api/auth/otp/email/request` | `{ email }` — OTP logged in dev                    |
+| POST   | `/api/auth/otp/email/verify`  | `{ email, code, name?, countryCode? }`             |
+| POST   | `/api/auth/otp/phone/request` | `{ phone, phoneCode? }`                            |
+| POST   | `/api/auth/otp/phone/verify`  | `{ phone, phoneCode?, code, name?, countryCode? }` |
+| POST   | `/api/auth/refresh`           | `{ refreshToken }` or cookie                       |
+| POST   | `/api/auth/logout`            |                                                    |
+| POST   | `/api/auth/google`            | stub — requires `email` + `idToken`                |
+| POST   | `/api/auth/apple`             | stub — requires `email` + `idToken`                |
 
 Tokens returned in JSON; also set as httpOnly cookies.
 
@@ -75,12 +75,12 @@ Tokens returned in JSON; also set as httpOnly cookies.
 
 ## Listings
 
-| Method | Path | Auth |
-|--------|------|------|
-| GET | `/api/listings` | no |
-| GET | `/api/listings/:id` | no |
-| POST | `/api/listings` | yes |
-| PATCH | `/api/listings/:id` | owner |
+| Method | Path                | Auth                     |
+| ------ | ------------------- | ------------------------ |
+| GET    | `/api/listings`     | no                       |
+| GET    | `/api/listings/:id` | no                       |
+| POST   | `/api/listings`     | yes                      |
+| PATCH  | `/api/listings/:id` | owner                    |
 | DELETE | `/api/listings/:id` | owner (soft → `removed`) |
 
 Query params: `category`, `intent`, `type` (`rentals`\|`wanted`\|`free`), `city`, `q`, `lat`, `lng`, `radiusMiles`, `sort`, `page`, `limit`, `sellerId`.
@@ -89,28 +89,28 @@ Market: `x-country-code` header or `?countryCode=` (US\|CA\|IN).
 
 ## Saved / wishlist
 
-| Method | Path | Auth | Body |
-|--------|------|------|------|
-| GET | `/api/saved` | yes | → `{ ids, items }` |
-| POST | `/api/saved/toggle` | yes | `{ listingId }` → `{ saved, ids }` |
-| DELETE | `/api/saved` | yes | clear all |
+| Method | Path                | Auth | Body                               |
+| ------ | ------------------- | ---- | ---------------------------------- |
+| GET    | `/api/saved`        | yes  | → `{ ids, items }`                 |
+| POST   | `/api/saved/toggle` | yes  | `{ listingId }` → `{ saved, ids }` |
+| DELETE | `/api/saved`        | yes  | clear all                          |
 
 ## Compare
 
-| Method | Path | Auth | Body |
-|--------|------|------|------|
-| GET | `/api/compare` | yes | → `{ ids, items, max }` (max 3) |
-| POST | `/api/compare/toggle` | yes | `{ listingId }` → `{ added, ids, max }` |
-| DELETE | `/api/compare` | yes | clear tray |
+| Method | Path                  | Auth | Body                                    |
+| ------ | --------------------- | ---- | --------------------------------------- |
+| GET    | `/api/compare`        | yes  | → `{ ids, items, max }` (max 3)         |
+| POST   | `/api/compare/toggle` | yes  | `{ listingId }` → `{ added, ids, max }` |
+| DELETE | `/api/compare`        | yes  | clear tray                              |
 
 ## Chat
 
-| Method | Path | Auth |
-|--------|------|------|
-| GET | `/api/chat/conversations` | yes |
-| POST | `/api/chat/conversations` | yes — start `{ recipientId, listingId?, text? }` |
-| GET | `/api/chat/conversations/:id/messages` | yes |
-| POST | `/api/chat/conversations/:id/messages` | yes — `{ text }` |
+| Method | Path                                   | Auth                                             |
+| ------ | -------------------------------------- | ------------------------------------------------ |
+| GET    | `/api/chat/conversations`              | yes                                              |
+| POST   | `/api/chat/conversations`              | yes — start `{ recipientId, listingId?, text? }` |
+| GET    | `/api/chat/conversations/:id/messages` | yes                                              |
+| POST   | `/api/chat/conversations/:id/messages` | yes — `{ text }`                                 |
 
 Socket.IO (`CLIENT_URL` CORS): auth via `auth.token` access JWT.
 
@@ -119,13 +119,13 @@ Socket.IO (`CLIENT_URL` CORS): auth via `auth.token` access JWT.
 
 ## Notifications
 
-| Method | Path | Auth |
-|--------|------|------|
-| GET | `/api/notifications` | yes → `{ items, unread }` |
-| GET | `/api/notifications/unread-count` | yes |
-| POST | `/api/notifications/:id/read` | yes |
-| POST | `/api/notifications/read-all` | yes |
-| DELETE | `/api/notifications/:id` | yes |
+| Method | Path                              | Auth                      |
+| ------ | --------------------------------- | ------------------------- |
+| GET    | `/api/notifications`              | yes → `{ items, unread }` |
+| GET    | `/api/notifications/unread-count` | yes                       |
+| POST   | `/api/notifications/:id/read`     | yes                       |
+| POST   | `/api/notifications/read-all`     | yes                       |
+| DELETE | `/api/notifications/:id`          | yes                       |
 
 Message sends also create an in-app notification for recipients.
 
@@ -135,36 +135,36 @@ Message sends also create an in-app notification for recipients.
 
 ## Premium
 
-| Method | Path | Auth |
-|--------|------|------|
-| GET | `/api/premium/plan` | no |
-| GET | `/api/premium/status` | yes |
-| POST | `/api/premium/trial` | yes — one free trial |
-| POST | `/api/premium/checkout` | yes |
-| POST | `/api/premium/verify/razorpay` | yes |
-| POST | `/api/premium/verify/stripe` | yes |
+| Method | Path                           | Auth                 |
+| ------ | ------------------------------ | -------------------- |
+| GET    | `/api/premium/plan`            | no                   |
+| GET    | `/api/premium/status`          | yes                  |
+| POST   | `/api/premium/trial`           | yes — one free trial |
+| POST   | `/api/premium/checkout`        | yes                  |
+| POST   | `/api/premium/verify/razorpay` | yes                  |
+| POST   | `/api/premium/verify/stripe`   | yes                  |
 
 Webhooks activate boost, premium, and event tickets via payment `purpose`. Events stored in `webhookevents`.
 
 ## Event tickets
 
-| Method | Path | Auth |
-|--------|------|------|
-| POST | `/api/events/:listingId/checkout` | yes — free confirms immediately; paid returns Razorpay/Stripe payload |
-| POST | `/api/events/:listingId/book` | yes — free events only |
-| POST | `/api/events/verify/razorpay` | yes |
-| POST | `/api/events/verify/stripe` | yes |
-| GET | `/api/events/my-bookings` | yes |
-| GET | `/api/events/my-bookings/:bookingId` | yes |
-| GET | `/api/events/:listingId/bookings` | yes — organizer |
+| Method | Path                                 | Auth                                                                  |
+| ------ | ------------------------------------ | --------------------------------------------------------------------- |
+| POST   | `/api/events/:listingId/checkout`    | yes — free confirms immediately; paid returns Razorpay/Stripe payload |
+| POST   | `/api/events/:listingId/book`        | yes — free events only                                                |
+| POST   | `/api/events/verify/razorpay`        | yes                                                                   |
+| POST   | `/api/events/verify/stripe`          | yes                                                                   |
+| GET    | `/api/events/my-bookings`            | yes                                                                   |
+| GET    | `/api/events/my-bookings/:bookingId` | yes                                                                   |
+| GET    | `/api/events/:listingId/bookings`    | yes — organizer                                                       |
 
 ## Seller reviews
 
-| Method | Path | Auth |
-|--------|------|------|
-| GET | `/api/seller-reviews/:sellerId` | no — list + stats |
-| GET | `/api/seller-reviews/:sellerId/stats` | no |
-| POST | `/api/seller-reviews` | yes — `{ sellerId, rating, comment, listingId? }` |
+| Method | Path                                  | Auth                                              |
+| ------ | ------------------------------------- | ------------------------------------------------- |
+| GET    | `/api/seller-reviews/:sellerId`       | no — list + stats                                 |
+| GET    | `/api/seller-reviews/:sellerId/stats` | no                                                |
+| POST   | `/api/seller-reviews`                 | yes — `{ sellerId, rating, comment, listingId? }` |
 
 `GET /api/users/:id` includes `averageRating` and `totalReviews`.
 
@@ -177,19 +177,18 @@ npm run migrate:prod:write -- --collections=sellerreviews
 
 ## Boost / payments
 
-| Method | Path | Auth |
-|--------|------|------|
-| GET | `/api/boost/plans` | no — market-aware plans |
-| GET | `/api/boost/campaigns` | yes — your boost history |
-| POST | `/api/boost/checkout` | yes — `{ planKey, listingId }` creates pending payment + campaign |
-| POST | `/api/boost/verify/razorpay` | yes — `{ orderId, paymentId, signature }` |
-| POST | `/api/boost/verify/stripe` | yes — `{ paymentIntentId }` |
-| GET | `/api/payments/config` | no |
-| POST | `/api/webhooks/razorpay` | provider HMAC |
-| POST | `/api/webhooks/stripe` | Stripe signature |
+| Method | Path                         | Auth                                                              |
+| ------ | ---------------------------- | ----------------------------------------------------------------- |
+| GET    | `/api/boost/plans`           | no — market-aware plans                                           |
+| GET    | `/api/boost/campaigns`       | yes — your boost history                                          |
+| POST   | `/api/boost/checkout`        | yes — `{ planKey, listingId }` creates pending payment + campaign |
+| POST   | `/api/boost/verify/razorpay` | yes — `{ orderId, paymentId, signature }`                         |
+| POST   | `/api/boost/verify/stripe`   | yes — `{ paymentIntentId }`                                       |
+| GET    | `/api/payments/config`       | no                                                                |
+| POST   | `/api/webhooks/razorpay`     | provider HMAC                                                     |
+| POST   | `/api/webhooks/stripe`       | Stripe signature                                                  |
 
 On success: campaign → `active`, listing `featured: true` until `endAt`.
-
 
 Set in `version-1/next-website/.env.local`:
 
@@ -219,4 +218,3 @@ cd version-1/api && npm run seed   # once
 # terminal 3
 cd version-1/next-website && npm run dev
 ```
-

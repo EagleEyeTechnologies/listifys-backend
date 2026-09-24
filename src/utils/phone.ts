@@ -167,10 +167,7 @@ export function normalizePhoneParts(
 }
 
 /** Display as `+91 9347190965` (space after dial code). */
-export function formatPhoneDisplay(
-  phoneCode?: string | null,
-  phone?: string | null,
-): string {
+export function formatPhoneDisplay(phoneCode?: string | null, phone?: string | null): string {
   const parts = normalizePhoneParts(phoneCode, phone);
   if (!parts.phone && !parts.phoneCode) return "—";
   if (!parts.phone) return parts.phoneCode || "—";

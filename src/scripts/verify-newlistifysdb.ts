@@ -17,9 +17,7 @@ function withDbName(uri: string, dbName: string): string {
 
 async function main() {
   const base =
-    process.env.TARGET_MONGODB_URI ||
-    process.env.SOURCE_MONGODB_URI ||
-    process.env.MONGODB_URI;
+    process.env.TARGET_MONGODB_URI || process.env.SOURCE_MONGODB_URI || process.env.MONGODB_URI;
   if (!base) {
     console.error("Need TARGET_MONGODB_URI or SOURCE_MONGODB_URI or MONGODB_URI");
     process.exit(1);
@@ -30,22 +28,13 @@ async function main() {
   await client.connect();
   const db = client.db(dbName);
 
-  for (const n of [
-    "users",
-    "listings",
-    "conversations",
-    "messages",
-    "notifications",
-  ]) {
+  for (const n of ["users", "listings", "conversations", "messages", "notifications"]) {
     console.log(`${n}: ${await db.collection(n).countDocuments()}`);
   }
 
   const cats = await db
     .collection("listings")
-    .aggregate([
-      { $group: { _id: "$category", n: { $sum: 1 } } },
-      { $sort: { n: -1 } },
-    ])
+    .aggregate([{ $group: { _id: "$category", n: { $sum: 1 } } }, { $sort: { n: -1 } }])
     .toArray();
   console.log("categories:", cats);
 

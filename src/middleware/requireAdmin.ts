@@ -28,9 +28,7 @@ async function assertAdmin(req: Request, _res: Response, next: NextFunction) {
     const envAllowed = isAdminEmail(email);
     const account = await AdminAccount.findOne({ email, isActive: true });
     if (!envAllowed && !account) {
-      return next(
-        new AppError(403, "Access denied. Admin only.", "FORBIDDEN"),
-      );
+      return next(new AppError(403, "Access denied. Admin only.", "FORBIDDEN"));
     }
     if (!account && envAllowed) {
       await AdminAccount.updateOne(

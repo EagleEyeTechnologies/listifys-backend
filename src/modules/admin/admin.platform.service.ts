@@ -138,10 +138,9 @@ export async function getAdminAnalytics() {
   }
   const signupTotal =
     (providerMap.email || 0) +
-    (providerMap.google || 0) +
-    (providerMap.apple || 0) +
-    (providerMap.phone || 0) ||
-    1;
+      (providerMap.google || 0) +
+      (providerMap.apple || 0) +
+      (providerMap.phone || 0) || 1;
   const pct = (n: number) => Math.round((n / signupTotal) * 100);
 
   return {
@@ -184,14 +183,12 @@ export async function getModerationStats() {
   return { open, listing, image, review, resolved30 };
 }
 
-const moderationQuerySchema = pageQuerySchema.extend({
+export const moderationQuerySchema = pageQuerySchema.extend({
   type: z.string().optional().default("all"),
   priority: z.string().optional().default("all"),
 });
 
-export async function listModerationReports(
-  query: z.infer<typeof moderationQuerySchema>,
-) {
+export async function listModerationReports(query: z.infer<typeof moderationQuerySchema>) {
   await syncFlaggedReviewsToModeration().catch(() => undefined);
   const filter: Record<string, unknown> = {};
   if (query.status && query.status !== "all") {
@@ -236,12 +233,7 @@ export async function listModerationReports(
             : r.status === "resolved"
               ? "Resolved"
               : "Dismissed",
-      priority:
-        r.priority === "high"
-          ? "High"
-          : r.priority === "medium"
-            ? "Medium"
-            : "Low",
+      priority: r.priority === "high" ? "High" : r.priority === "medium" ? "Medium" : "Low",
       created: relativeTime(r.createdAt as Date),
     })),
     page: query.page,
@@ -256,13 +248,7 @@ export const patchModerationReportSchema = z.object({
   notes: z.string().max(2000).optional(),
   /** Optional enforcement when resolving */
   action: z
-    .enum([
-      "none",
-      "pause_listing",
-      "remove_listing",
-      "hide_review",
-      "deactivate_user",
-    ])
+    .enum(["none", "pause_listing", "remove_listing", "hide_review", "deactivate_user"])
     .optional()
     .default("none"),
 });
@@ -337,7 +323,7 @@ export async function getActivityStats() {
   return { today, activeAdmins, moderationActions, sensitive };
 }
 
-const activityQuerySchema = pageQuerySchema.extend({
+export const activityQuerySchema = pageQuerySchema.extend({
   admin: z.string().optional().default("all"),
   section: z.string().optional().default("all"),
 });
@@ -402,13 +388,11 @@ export async function getNotificationCampaignStats() {
   };
 }
 
-const campaignQuerySchema = pageQuerySchema.extend({
+export const campaignQuerySchema = pageQuerySchema.extend({
   channel: z.string().optional().default("all"),
 });
 
-export async function listNotificationCampaigns(
-  query: z.infer<typeof campaignQuerySchema>,
-) {
+export async function listNotificationCampaigns(query: z.infer<typeof campaignQuerySchema>) {
   const filter: Record<string, unknown> = {};
   if (query.status && query.status !== "all") {
     const map: Record<string, string> = {
@@ -452,17 +436,13 @@ export async function listNotificationCampaigns(
       body: c.body,
       audience: audienceLabel(c.audience),
       channel: channelLabel(c.channel),
-      status:
-        c.status === "sent" ? "Sent" : c.status === "scheduled" ? "Scheduled" : "Draft",
+      status: c.status === "sent" ? "Sent" : c.status === "scheduled" ? "Scheduled" : "Draft",
       sentAt: c.sentAt
         ? formatDate(c.sentAt) +
           ", " +
           c.sentAt.toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" })
         : "—",
-      opens:
-        c.recipientCount > 0
-          ? `${Math.round((c.openCount / c.recipientCount) * 100)}%`
-          : "—",
+      opens: c.recipientCount > 0 ? `${Math.round((c.openCount / c.recipientCount) * 100)}%` : "—",
     })),
     page: query.page,
     limit: query.limit,
@@ -491,7 +471,9 @@ async function audienceFilter(audience: string) {
 
 async function deliverCampaign(campaign: InstanceType<typeof NotificationCampaign>) {
   const { createNotification } = await import("../notifications/notification.service.js");
-  const users = await User.find(await audienceFilter(campaign.audience)).select("_id").lean();
+  const users = await User.find(await audienceFilter(campaign.audience))
+    .select("_id")
+    .lean();
   let sent = 0;
   for (const u of users) {
     try {
@@ -574,9 +556,7 @@ export async function getAppUpdateStats() {
     AppUpdateConfig.findOne({ platform: "android", status: "active" })
       .sort({ publishedAt: -1 })
       .lean(),
-    AppUpdateConfig.findOne({ platform: "ios", status: "active" })
-      .sort({ publishedAt: -1 })
-      .lean(),
+    AppUpdateConfig.findOne({ platform: "ios", status: "active" }).sort({ publishedAt: -1 }).lean(),
   ]);
   return {
     active,
@@ -590,8 +570,7 @@ export async function getAppUpdateStats() {
 
 export async function listAppUpdates() {
   const rows = await AppUpdateConfig.find({}).sort({ updatedAt: -1 }).limit(50).lean();
-  const platformLabel = (p: string) =>
-    p === "android" ? "Android" : p === "ios" ? "iOS" : "Both";
+  const platformLabel = (p: string) => (p === "android" ? "Android" : p === "ios" ? "iOS" : "Both");
   return rows.map((r) => ({
     id: r._id.toString(),
     platform: platformLabel(r.platform),
@@ -602,8 +581,7 @@ export async function listAppUpdates() {
     forceUpdate: r.forceUpdate,
     storeUrl: r.storeUrl,
     releaseNotes: r.releaseNotes,
-    status:
-      r.status === "active" ? "Active" : r.status === "deprecated" ? "Deprecated" : "Draft",
+    status: r.status === "active" ? "Active" : r.status === "deprecated" ? "Deprecated" : "Draft",
     publishedAt: formatDate(r.publishedAt as Date | undefined),
   }));
 }

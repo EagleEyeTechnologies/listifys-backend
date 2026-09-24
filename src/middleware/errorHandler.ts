@@ -3,12 +3,7 @@ import { AppError } from "../utils/AppError.js";
 import { logger } from "../utils/logger.js";
 import { env } from "../config/env.js";
 
-export function errorHandler(
-  err: unknown,
-  _req: Request,
-  res: Response,
-  _next: NextFunction,
-) {
+export function errorHandler(err: unknown, _req: Request, res: Response, _next: NextFunction) {
   if (err instanceof AppError) {
     // Always surface delivery / auth failures in logs (otp.ts also logs provider bodies).
     if (

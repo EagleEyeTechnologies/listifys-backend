@@ -25,9 +25,7 @@ async function main() {
   let msgScanned = 0;
   let msgUpdated = 0;
   let msgFailed = 0;
-  const msgCursor = db
-    .collection("messages")
-    .find({ text: { $regex: "^enc:" } });
+  const msgCursor = db.collection("messages").find({ text: { $regex: "^enc:" } });
 
   for await (const doc of msgCursor) {
     msgScanned += 1;
@@ -38,10 +36,7 @@ async function main() {
       continue;
     }
     if (write) {
-      await db.collection("messages").updateOne(
-        { _id: doc._id },
-        { $set: { text: plain } },
-      );
+      await db.collection("messages").updateOne({ _id: doc._id }, { $set: { text: plain } });
     }
     msgUpdated += 1;
   }
@@ -49,9 +44,7 @@ async function main() {
   let convScanned = 0;
   let convUpdated = 0;
   let convFailed = 0;
-  const convCursor = db
-    .collection("conversations")
-    .find({ lastMessageText: { $regex: "^enc:" } });
+  const convCursor = db.collection("conversations").find({ lastMessageText: { $regex: "^enc:" } });
 
   for await (const doc of convCursor) {
     convScanned += 1;
@@ -62,10 +55,9 @@ async function main() {
       continue;
     }
     if (write) {
-      await db.collection("conversations").updateOne(
-        { _id: doc._id },
-        { $set: { lastMessageText: plain } },
-      );
+      await db
+        .collection("conversations")
+        .updateOne({ _id: doc._id }, { $set: { lastMessageText: plain } });
     }
     convUpdated += 1;
   }

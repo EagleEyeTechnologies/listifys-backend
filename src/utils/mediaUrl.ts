@@ -1,12 +1,6 @@
 import { env } from "../config/env.js";
 
-const LOCAL_ASSET_PREFIXES = [
-  "/images/",
-  "/icons/",
-  "/categories/",
-  "/collections/",
-  "/static-",
-];
+const LOCAL_ASSET_PREFIXES = ["/images/", "/icons/", "/categories/", "/collections/", "/static-"];
 
 const S3_KEY_PREFIXES = [
   "profiles/",

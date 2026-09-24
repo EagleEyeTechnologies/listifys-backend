@@ -102,11 +102,7 @@ export const createUserReportSchema = z.object({
 
 function priorityFromReason(reason: string): "high" | "medium" | "low" {
   const r = reason.toLowerCase();
-  if (
-    /scam|fraud|harass|threat|illegal|child|weapon|counterfeit|spam|abuse/.test(
-      r,
-    )
-  ) {
+  if (/scam|fraud|harass|threat|illegal|child|weapon|counterfeit|spam|abuse/.test(r)) {
     return "high";
   }
   if (/misleading|fake|inappropriate|offensive|wrong/.test(r)) {
@@ -133,12 +129,10 @@ export async function createUserReport(
   let conversationId: mongoose.Types.ObjectId | undefined;
   let reviewId: mongoose.Types.ObjectId | undefined;
   let imageUrl = input.imageUrl || "";
-  let type = input.type;
+  const type = input.type;
 
   if (input.type === "listing" || input.type === "image") {
-    const listing = await Listing.findById(input.targetId).select(
-      "title seller images status",
-    );
+    const listing = await Listing.findById(input.targetId).select("title seller images status");
     if (!listing) throw new AppError(404, "Listing not found", "NOT_FOUND");
     if (String(listing.seller) === String(reporterId)) {
       throw new AppError(400, "You cannot report your own listing", "VALIDATION_ERROR");
@@ -149,9 +143,7 @@ export async function createUserReport(
     if (input.type === "image") {
       imageUrl =
         imageUrl ||
-        (Array.isArray(listing.images) && listing.images[0]
-          ? String(listing.images[0])
-          : "");
+        (Array.isArray(listing.images) && listing.images[0] ? String(listing.images[0]) : "");
     }
   } else if (input.type === "user") {
     const user = await User.findById(input.targetId).select("name email");
@@ -308,15 +300,9 @@ export async function createAdminFlagReport(input: {
     type: input.type,
     subject: input.subject,
     subjectId: new mongoose.Types.ObjectId(input.subjectId),
-    listingId: input.listingId
-      ? new mongoose.Types.ObjectId(input.listingId)
-      : undefined,
-    userId: input.userId
-      ? new mongoose.Types.ObjectId(input.userId)
-      : undefined,
-    reviewId: input.reviewId
-      ? new mongoose.Types.ObjectId(input.reviewId)
-      : undefined,
+    listingId: input.listingId ? new mongoose.Types.ObjectId(input.listingId) : undefined,
+    userId: input.userId ? new mongoose.Types.ObjectId(input.userId) : undefined,
+    reviewId: input.reviewId ? new mongoose.Types.ObjectId(input.reviewId) : undefined,
     conversationId: input.conversationId
       ? new mongoose.Types.ObjectId(input.conversationId)
       : undefined,

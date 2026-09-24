@@ -4,11 +4,7 @@ import { asyncHandler } from "../../utils/asyncHandler.js";
 import { optionalAuth, requireAuth } from "../../middleware/auth.js";
 import { AppError } from "../../utils/AppError.js";
 import { User } from "./user.model.js";
-import {
-  browseListings,
-  listMyListings,
-  listQuerySchema,
-} from "../listings/listing.service.js";
+import { browseListings, listMyListings, listQuerySchema } from "../listings/listing.service.js";
 import {
   listConnections,
   removeFollower,
@@ -54,12 +50,7 @@ usersRouter.patch(
   asyncHandler(async (req, res) => {
     const parsed = updateMeSchema.safeParse(req.body);
     if (!parsed.success) {
-      throw new AppError(
-        400,
-        "Invalid payload",
-        "VALIDATION_ERROR",
-        parsed.error.flatten(),
-      );
+      throw new AppError(400, "Invalid payload", "VALIDATION_ERROR", parsed.error.flatten());
     }
     const data = await updateMe(req.userId!, parsed.data);
     res.json({ success: true, data });
@@ -105,11 +96,7 @@ usersRouter.post(
     if (!parsed.success) {
       throw new AppError(400, "Invalid payload", "VALIDATION_ERROR", parsed.error.flatten());
     }
-    const data = await verifyEmailChange(
-      req.userId!,
-      parsed.data.email,
-      parsed.data.code,
-    );
+    const data = await verifyEmailChange(req.userId!, parsed.data.email, parsed.data.code);
     res.json({ success: true, data });
   }),
 );
@@ -122,11 +109,7 @@ usersRouter.post(
     if (!parsed.success) {
       throw new AppError(400, "Invalid phone", "VALIDATION_ERROR", parsed.error.flatten());
     }
-    const data = await requestPhoneChange(
-      req.userId!,
-      parsed.data.phone,
-      parsed.data.phoneCode,
-    );
+    const data = await requestPhoneChange(req.userId!, parsed.data.phone, parsed.data.phoneCode);
     res.json({ success: true, data });
   }),
 );
@@ -198,11 +181,7 @@ usersRouter.get(
   "/:id/followers",
   optionalAuth,
   asyncHandler(async (req, res) => {
-    const data = await listConnections(
-      String(req.params.id),
-      "followers",
-      req.userId,
-    );
+    const data = await listConnections(String(req.params.id), "followers", req.userId);
     res.json({ success: true, data });
   }),
 );
@@ -211,11 +190,7 @@ usersRouter.get(
   "/:id/following",
   optionalAuth,
   asyncHandler(async (req, res) => {
-    const data = await listConnections(
-      String(req.params.id),
-      "following",
-      req.userId,
-    );
+    const data = await listConnections(String(req.params.id), "following", req.userId);
     res.json({ success: true, data });
   }),
 );

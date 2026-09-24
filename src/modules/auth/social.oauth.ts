@@ -38,9 +38,7 @@ export function appleAudiences(): string[] {
 }
 
 const googleClient = new OAuth2Client(env.GOOGLE_CLIENT_ID || undefined);
-const appleJwks = createRemoteJWKSet(
-  new URL("https://appleid.apple.com/auth/keys"),
-);
+const appleJwks = createRemoteJWKSet(new URL("https://appleid.apple.com/auth/keys"));
 
 export type GoogleIdentity = {
   googleId: string;
@@ -56,16 +54,10 @@ export type AppleIdentity = {
   emailVerified: boolean;
 };
 
-export async function verifyGoogleIdToken(
-  idToken: string,
-): Promise<GoogleIdentity> {
+export async function verifyGoogleIdToken(idToken: string): Promise<GoogleIdentity> {
   const audiences = googleAudiences();
   if (!audiences.length) {
-    throw new AppError(
-      503,
-      "Google sign-in is not configured",
-      "SOCIAL_AUTH_UNAVAILABLE",
-    );
+    throw new AppError(503, "Google sign-in is not configured", "SOCIAL_AUTH_UNAVAILABLE");
   }
   if (!idToken || idToken.length < 100) {
     throw new AppError(401, "Invalid Google ID token", "UNAUTHORIZED");
@@ -78,11 +70,7 @@ export async function verifyGoogleIdToken(
     });
     const payload = ticket.getPayload();
     if (!payload?.sub || !payload.email) {
-      throw new AppError(
-        401,
-        "Invalid Google ID token payload",
-        "UNAUTHORIZED",
-      );
+      throw new AppError(401, "Invalid Google ID token payload", "UNAUTHORIZED");
     }
     return {
       googleId: payload.sub,
@@ -94,24 +82,14 @@ export async function verifyGoogleIdToken(
   } catch (err) {
     if (err instanceof AppError) throw err;
     const message = err instanceof Error ? err.message : "Verification failed";
-    throw new AppError(
-      401,
-      `Google authentication failed: ${message}`,
-      "UNAUTHORIZED",
-    );
+    throw new AppError(401, `Google authentication failed: ${message}`, "UNAUTHORIZED");
   }
 }
 
-export async function verifyAppleIdentityToken(
-  identityToken: string,
-): Promise<AppleIdentity> {
+export async function verifyAppleIdentityToken(identityToken: string): Promise<AppleIdentity> {
   const audiences = appleAudiences();
   if (!audiences.length) {
-    throw new AppError(
-      503,
-      "Apple sign-in is not configured",
-      "SOCIAL_AUTH_UNAVAILABLE",
-    );
+    throw new AppError(503, "Apple sign-in is not configured", "SOCIAL_AUTH_UNAVAILABLE");
   }
   if (!identityToken) {
     throw new AppError(401, "Apple identity token is required", "UNAUTHORIZED");
@@ -128,16 +106,11 @@ export async function verifyAppleIdentityToken(
     return {
       appleId: String(payload.sub),
       email: payload.email ? String(payload.email).toLowerCase() : undefined,
-      emailVerified:
-        payload.email_verified === true || payload.email_verified === "true",
+      emailVerified: payload.email_verified === true || payload.email_verified === "true",
     };
   } catch (err) {
     if (err instanceof AppError) throw err;
     const message = err instanceof Error ? err.message : "Verification failed";
-    throw new AppError(
-      401,
-      `Apple authentication failed: ${message}`,
-      "UNAUTHORIZED",
-    );
+    throw new AppError(401, `Apple authentication failed: ${message}`, "UNAUTHORIZED");
   }
 }

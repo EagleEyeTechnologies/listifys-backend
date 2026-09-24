@@ -47,8 +47,7 @@ function argvTokens(): string[] {
   }
   if (process.env.npm_config_write === "true") fromNpm.push("--write");
   if (process.env.MIGRATE_WRITE === "1") fromNpm.push("--write");
-  const collectionsEnv =
-    process.env.npm_config_collections || process.env.MIGRATE_COLLECTIONS;
+  const collectionsEnv = process.env.npm_config_collections || process.env.MIGRATE_COLLECTIONS;
   if (collectionsEnv) fromNpm.push(`--collections=${collectionsEnv}`);
   return [...fromProcess, ...fromNpm];
 }
@@ -295,14 +294,10 @@ function normalizeLocation(doc: Document): {
   } else if (doc.location && typeof doc.location === "object") {
     const loc = doc.location as Record<string, unknown>;
     location = String(
-      loc.address ||
-        [loc.city, loc.state, loc.pincode || loc.zip].filter(Boolean).join(", ") ||
-        "",
+      loc.address || [loc.city, loc.state, loc.pincode || loc.zip].filter(Boolean).join(", ") || "",
     ).trim();
     city = String(loc.city || "").trim();
-    const c =
-      (loc.coordinates as { coordinates?: number[] } | number[] | undefined) ||
-      undefined;
+    const c = (loc.coordinates as { coordinates?: number[] } | number[] | undefined) || undefined;
     if (Array.isArray(c) && c.length >= 2) {
       coordinates = {
         type: "Point",
@@ -337,7 +332,10 @@ function normalizeLocation(doc: Document): {
   }
 
   if (!city && location) {
-    const parts = location.split(",").map((p) => p.trim()).filter(Boolean);
+    const parts = location
+      .split(",")
+      .map((p) => p.trim())
+      .filter(Boolean);
     city = parts.length >= 2 ? parts[parts.length - 2]! : parts[0] || "";
   }
 
@@ -424,14 +422,14 @@ function transformListing(
   }
 
   const subcategory =
-    typeof doc.subcategory === "string"
-      ? doc.subcategory
-      : String(doc.subcategory || "");
+    typeof doc.subcategory === "string" ? doc.subcategory : String(doc.subcategory || "");
 
   const out: Document = {
     _id: doc._id,
     title,
-    description: String(doc.description || title).trim().slice(0, 10000),
+    description: String(doc.description || title)
+      .trim()
+      .slice(0, 10000),
     category: meta.category,
     subcategory,
     subSubcategory: String(doc.subSubcategory || doc.sub_subcategory || ""),
@@ -471,8 +469,7 @@ function transformUser(doc: Document, savedIds: string[]): Document {
   if (doc.email) {
     providers.push({
       provider: provider === "google" ? "google" : provider === "apple" ? "apple" : "email",
-      providerId:
-        doc.googleId || doc.appleId || String(doc.email).toLowerCase(),
+      providerId: doc.googleId || doc.appleId || String(doc.email).toLowerCase(),
     });
   }
   if (doc.phone) {
@@ -490,11 +487,7 @@ function transformUser(doc: Document, savedIds: string[]): Document {
 
   const country = inferCountryCode(doc);
   const avatar =
-    doc.profileImage ||
-    doc.avatar ||
-    doc.googleProfileImage ||
-    doc.profileImageThumbnail ||
-    "";
+    doc.profileImage || doc.avatar || doc.googleProfileImage || doc.profileImageThumbnail || "";
 
   const devices = Array.isArray(doc.devices)
     ? doc.devices.map((d: Document) => ({
@@ -535,7 +528,8 @@ function transformUser(doc: Document, savedIds: string[]): Document {
       out.phone = digits.slice(-10);
     } else if (rawCode) {
       out.phoneCode = rawCode.startsWith("+") ? rawCode : `+${rawCode.replace(/\D/g, "")}`;
-      out.phone = digits.length > 10 && digits.startsWith("91") ? digits.slice(-10) : digits || rawPhone;
+      out.phone =
+        digits.length > 10 && digits.startsWith("91") ? digits.slice(-10) : digits || rawPhone;
     } else {
       out.phone = rawPhone;
     }
@@ -545,11 +539,7 @@ function transformUser(doc: Document, savedIds: string[]): Document {
     (doc.address && String(doc.address).trim()) ||
     (doc.location && typeof doc.location === "string" && doc.location.trim()) ||
     (doc.location && typeof doc.location === "object"
-      ? String(
-          (doc.location as Document).address ||
-            (doc.location as Document).city ||
-            "",
-        ).trim()
+      ? String((doc.location as Document).address || (doc.location as Document).city || "").trim()
       : "") ||
     "";
   if (location) out.location = location;
@@ -653,9 +643,7 @@ function transformSellerReview(doc: Document): Document | null {
   if (!Number.isFinite(rating) || rating < 1 || rating > 5) return null;
   const comment = String(doc.comment || "").trim();
   if (comment.length < 10) return null;
-  const status = ["published", "hidden", "flagged"].includes(
-    String(doc.status || ""),
-  )
+  const status = ["published", "hidden", "flagged"].includes(String(doc.status || ""))
     ? String(doc.status)
     : "published";
   return {
@@ -737,12 +725,7 @@ function transformMessage(doc: Document): Document | null {
   };
 }
 
-async function bulkUpsert(
-  db: Db,
-  collection: string,
-  docs: Document[],
-  stats: Stats,
-) {
+async function bulkUpsert(db: Db, collection: string, docs: Document[], stats: Stats) {
   if (!docs.length) return;
   stats.read += docs.length;
   if (DRY_RUN) {
@@ -758,12 +741,9 @@ async function bulkUpsert(
   }));
   try {
     const res = await db.collection(collection).bulkWrite(ops, { ordered: false });
-    stats.written +=
-      (res.upsertedCount || 0) + (res.modifiedCount || 0) + (res.matchedCount || 0);
+    stats.written += (res.upsertedCount || 0) + (res.modifiedCount || 0) + (res.matchedCount || 0);
   } catch (err) {
-    stats.errors.push(
-      `${collection}: ${err instanceof Error ? err.message : String(err)}`,
-    );
+    stats.errors.push(`${collection}: ${err instanceof Error ? err.message : String(err)}`);
   }
 }
 
@@ -772,7 +752,9 @@ async function streamTransform(
   target: Db,
   sourceCollection: string,
   targetCollection: string,
-  transform: (doc: Document) => Document | null | { ok: false; reason: string } | { ok: true; doc: Document },
+  transform: (
+    doc: Document,
+  ) => Document | null | { ok: false; reason: string } | { ok: true; doc: Document },
   stats: Stats,
   onEach?: (doc: Document, out: Document) => void,
 ) {
@@ -785,10 +767,7 @@ async function streamTransform(
   const total = await source.collection(sourceCollection).countDocuments();
   logger.info(`[${sourceCollection} → ${targetCollection}] ${total} docs`);
 
-  const cursor = source
-    .collection(sourceCollection)
-    .find({})
-    .batchSize(BATCH);
+  const cursor = source.collection(sourceCollection).find({}).batchSize(BATCH);
   if (LIMIT > 0) cursor.limit(LIMIT);
 
   let batch: Document[] = [];
@@ -813,15 +792,11 @@ async function streamTransform(
       "ok" in result &&
       typeof (result as { ok: unknown }).ok === "boolean"
     ) {
-      const tagged = result as
-        | { ok: false; reason: string }
-        | { ok: true; doc: Document };
+      const tagged = result as { ok: false; reason: string } | { ok: true; doc: Document };
       if (!tagged.ok) {
         stats.skipped += 1;
         if (stats.errors.length < 50) {
-          stats.errors.push(
-            `${sourceCollection}/${String(doc._id)}: ${tagged.reason}`,
-          );
+          stats.errors.push(`${sourceCollection}/${String(doc._id)}: ${tagged.reason}`);
         }
         continue;
       }
@@ -847,10 +822,7 @@ async function collectSavedBy(source: Db): Promise<Map<string, Set<string>>> {
     if (!exists) continue;
     const cursor = source
       .collection(collection)
-      .find(
-        { savedBy: { $exists: true, $ne: [] } },
-        { projection: { _id: 1, savedBy: 1 } },
-      )
+      .find({ savedBy: { $exists: true, $ne: [] } }, { projection: { _id: 1, savedBy: 1 } })
       .batchSize(BATCH);
     for await (const doc of cursor) {
       const listingId = String(doc._id);
@@ -869,10 +841,7 @@ async function main() {
   const sourceDbName = process.env.SOURCE_DB_NAME || "production";
   const targetDbName = process.env.TARGET_DB_NAME || "newlistifysdb";
 
-  let sourceUri =
-    process.env.SOURCE_MONGODB_URI ||
-    process.env.MONGODB_URI ||
-    "";
+  let sourceUri = process.env.SOURCE_MONGODB_URI || process.env.MONGODB_URI || "";
   let targetUri = process.env.TARGET_MONGODB_URI || "";
 
   if (!sourceUri) {
@@ -992,30 +961,23 @@ async function main() {
           },
         ])
         .toArray();
-      const ops = defaults.map((a) => {
-        const loc =
-          (a.label && a.city && `${a.label} · ${a.city}`) ||
-          a.city ||
-          a.formattedAddress ||
-          "";
-        return {
-          updateOne: {
-            filter: {
-              _id: a._id,
-              $or: [
-                { location: { $exists: false } },
-                { location: "" },
-                { location: null },
-              ],
+      const ops = defaults
+        .map((a) => {
+          const loc =
+            (a.label && a.city && `${a.label} · ${a.city}`) || a.city || a.formattedAddress || "";
+          return {
+            updateOne: {
+              filter: {
+                _id: a._id,
+                $or: [{ location: { $exists: false } }, { location: "" }, { location: null }],
+              },
+              update: { $set: { location: loc } },
             },
-            update: { $set: { location: loc } },
-          },
-        };
-      }).filter((op) => op.updateOne.update.$set.location);
+          };
+        })
+        .filter((op) => op.updateOne.update.$set.location);
       for (let i = 0; i < ops.length; i += BATCH) {
-        await target
-          .collection("users")
-          .bulkWrite(ops.slice(i, i + BATCH), { ordered: false });
+        await target.collection("users").bulkWrite(ops.slice(i, i + BATCH), { ordered: false });
       }
     }
   }
@@ -1136,17 +1098,16 @@ async function main() {
   // Indexes on target (safe to re-run)
   if (!DRY_RUN && (want("listings") || want("users"))) {
     try {
-      await target.collection("listings").createIndexes([
-        { key: { countryCode: 1, status: 1, category: 1 } },
-        { key: { seller: 1, status: 1 } },
-        { key: { coordinates: "2dsphere" } },
-        { key: { title: "text", description: "text" } },
-      ]);
+      await target
+        .collection("listings")
+        .createIndexes([
+          { key: { countryCode: 1, status: 1, category: 1 } },
+          { key: { seller: 1, status: 1 } },
+          { key: { coordinates: "2dsphere" } },
+          { key: { title: "text", description: "text" } },
+        ]);
     } catch (err) {
-      console.warn(
-        "listings indexes:",
-        err instanceof Error ? err.message : String(err),
-      );
+      console.warn("listings indexes:", err instanceof Error ? err.message : String(err));
     }
 
     // Drop broken unique+sparse indexes that collide on email:null
@@ -1162,14 +1123,12 @@ async function main() {
     }
 
     // Remove explicit nulls so partial unique indexes work
-    await target.collection("users").updateMany(
-      { $or: [{ email: null }, { email: "" }] },
-      { $unset: { email: "" } },
-    );
-    await target.collection("users").updateMany(
-      { $or: [{ phone: null }, { phone: "" }] },
-      { $unset: { phone: "" } },
-    );
+    await target
+      .collection("users")
+      .updateMany({ $or: [{ email: null }, { email: "" }] }, { $unset: { email: "" } });
+    await target
+      .collection("users")
+      .updateMany({ $or: [{ phone: null }, { phone: "" }] }, { $unset: { phone: "" } });
 
     try {
       await target.collection("users").createIndexes([
@@ -1186,26 +1145,19 @@ async function main() {
         },
       ]);
     } catch (err) {
-      console.warn(
-        "users indexes:",
-        err instanceof Error ? err.message : String(err),
-      );
+      console.warn("users indexes:", err instanceof Error ? err.message : String(err));
     }
 
     try {
+      await target.collection("conversations").createIndex({ participants: 1, lastMessageAt: -1 });
+      await target.collection("messages").createIndex({ conversation: 1, createdAt: 1 });
+      await target.collection("notifications").createIndex({ user: 1, createdAt: -1 });
       await target
-        .collection("conversations")
-        .createIndex({ participants: 1, lastMessageAt: -1 });
-      await target
-        .collection("messages")
-        .createIndex({ conversation: 1, createdAt: 1 });
-      await target
-        .collection("notifications")
-        .createIndex({ user: 1, createdAt: -1 });
-      await target.collection("sellerreviews").createIndexes([
-        { key: { seller: 1, reviewer: 1 }, unique: true },
-        { key: { seller: 1, status: 1, createdAt: -1 } },
-      ]);
+        .collection("sellerreviews")
+        .createIndexes([
+          { key: { seller: 1, reviewer: 1 }, unique: true },
+          { key: { seller: 1, status: 1, createdAt: -1 } },
+        ]);
     } catch (err) {
       console.warn(
         "chat/notification/review indexes:",

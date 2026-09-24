@@ -1,0 +1,215 @@
+# ════════════════════════════════════════════════════════════════
+#  Backend STAGING — CI → Docker → ECR → EC2
+# ════════════════════════════════════════════════════════════════
+#  Trigger:
+#    • push           → any branch  → CI only
+#    • pull_request   → develop     → CI only
+#    • push/merge     → develop     → CI + Build + ECR Push + EC2 Deploy
+#    • workflow_dispatch            → manual full deploy
+#
+#  Secrets (GitHub → Settings → Secrets → Actions):
+#    STAGE_AWS_ACCESS_KEY_ID
+#    STAGE_AWS_SECRET_ACCESS_KEY
+#    STAGE_AWS_REGION                 (optional; default us-east-1)
+#    STAGE_EC2_HOST
+#    STAGE_EC2_USERNAME
+#    STAGE_EC2_SSH_KEY
+#    STAGE_EC2_ENV_DIR               (optional; default /home/ubuntu/Listifys-stage)
+#    ENV_FILE_STAGING                (required for deploy; full .env file contents)
+#
+#  EC2 prep (once):
+#    • Docker installed; deploy user in docker group
+# ════════════════════════════════════════════════════════════════
+
+name: Backend Staging
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: [develop]
+  workflow_dispatch:
+
+env:
+  NODE_VERSION: "20"
+  ECR_REPOSITORY: listifys-backend
+  CONTAINER_NAME: listifys-backend-stage
+  HOST_PORT: "5001"
+  CONTAINER_PORT: "5001"
+
+jobs:
+  ci:
+    name: CI
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: ESLint
+        run: npm run lint
+
+      - name: Prettier
+        run: npm run format:check
+
+      - name: Unit tests
+        run: npm run test
+
+  build-and-push:
+    name: Build & Push ECR
+    needs: ci
+    if: |
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'push' && github.ref == 'refs/heads/develop')
+    runs-on: ubuntu-latest
+    outputs:
+      image: ${{ steps.out.outputs.image }}
+      tag: ${{ steps.out.outputs.tag }}
+      region: ${{ steps.out.outputs.region }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve region & tag
+        id: prep
+        run: |
+          REGION="${{ secrets.STAGE_AWS_REGION }}"
+          if [ -z "$REGION" ]; then REGION="us-east-1"; fi
+          echo "region=${REGION}" >> "$GITHUB_OUTPUT"
+          echo "tag=${GITHUB_SHA::12}" >> "$GITHUB_OUTPUT"
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.STAGE_AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.STAGE_AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ steps.prep.outputs.region }}
+
+      - name: Login to Amazon ECR
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Ensure ECR repository exists
+        run: |
+          aws ecr describe-repositories --repository-names "$ECR_REPOSITORY" 2>/dev/null \
+            || aws ecr create-repository \
+                 --repository-name "$ECR_REPOSITORY" \
+                 --image-scanning-configuration scanOnPush=true \
+                 --encryption-configuration encryptionType=AES256
+
+      - name: Set outputs
+        id: out
+        run: |
+          IMAGE="${{ steps.ecr.outputs.registry }}/${ECR_REPOSITORY}"
+          echo "image=${IMAGE}" >> "$GITHUB_OUTPUT"
+          echo "tag=${{ steps.prep.outputs.tag }}" >> "$GITHUB_OUTPUT"
+          echo "region=${{ steps.prep.outputs.region }}" >> "$GITHUB_OUTPUT"
+          echo "IMAGE=${IMAGE}" >> "$GITHUB_ENV"
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          tags: |
+            ${{ env.IMAGE }}:${{ steps.prep.outputs.tag }}
+            ${{ env.IMAGE }}:staging
+
+  deploy:
+    name: Deploy EC2
+    needs: build-and-push
+    if: |
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'push' && github.ref == 'refs/heads/develop')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Resolve env dir
+        id: cfg
+        run: |
+          ENV_DIR="${{ secrets.STAGE_EC2_ENV_DIR }}"
+          if [ -z "$ENV_DIR" ]; then ENV_DIR="/home/ubuntu/Listifys-stage"; fi
+          echo "env_dir=${ENV_DIR}" >> "$GITHUB_OUTPUT"
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.STAGE_AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.STAGE_AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ needs.build-and-push.outputs.region }}
+
+      - name: Setup SSH
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "${{ secrets.STAGE_EC2_SSH_KEY }}" > ~/.ssh/ec2_key
+          chmod 600 ~/.ssh/ec2_key
+          ssh-keyscan -H "${{ secrets.STAGE_EC2_HOST }}" >> ~/.ssh/known_hosts
+
+      - name: Deploy backend container
+        env:
+          EC2_HOST: ${{ secrets.STAGE_EC2_HOST }}
+          EC2_USER: ${{ secrets.STAGE_EC2_USERNAME }}
+          ENV_DIR: ${{ steps.cfg.outputs.env_dir }}
+          ENV_FILE: ${{ secrets.ENV_FILE_STAGING }}
+          IMAGE: ${{ needs.build-and-push.outputs.image }}
+          TAG: ${{ needs.build-and-push.outputs.tag }}
+          REGION: ${{ needs.build-and-push.outputs.region }}
+        run: |
+          set -euo pipefail
+          REGISTRY="${IMAGE%%/*}"
+
+          if [ -z "${ENV_FILE}" ]; then
+            echo "ERROR: secret ENV_FILE_STAGING is empty or missing"
+            exit 1
+          fi
+
+          printf '%s\n' "$ENV_FILE" > /tmp/listifys.env
+          ssh -i ~/.ssh/ec2_key -o StrictHostKeyChecking=yes \
+            "${EC2_USER}@${EC2_HOST}" "mkdir -p '${ENV_DIR}'"
+          scp -i ~/.ssh/ec2_key -o StrictHostKeyChecking=yes \
+            /tmp/listifys.env "${EC2_USER}@${EC2_HOST}:${ENV_DIR}/.env"
+          rm -f /tmp/listifys.env
+
+          aws ecr get-login-password --region "$REGION" \
+            | ssh -i ~/.ssh/ec2_key -o StrictHostKeyChecking=yes \
+                "${EC2_USER}@${EC2_HOST}" \
+                "docker login --username AWS --password-stdin ${REGISTRY}"
+
+          ssh -i ~/.ssh/ec2_key -o StrictHostKeyChecking=yes \
+            "${EC2_USER}@${EC2_HOST}" \
+            "IMAGE='${IMAGE}' TAG='${TAG}' CONTAINER_NAME='${CONTAINER_NAME}' \
+             HOST_PORT='${HOST_PORT}' CONTAINER_PORT='${CONTAINER_PORT}' \
+             ENV_DIR='${ENV_DIR}' bash -s" <<'REMOTE'
+          set -euo pipefail
+
+          docker pull "${IMAGE}:${TAG}"
+
+          if [ ! -f "${ENV_DIR}/.env" ]; then
+            echo "ERROR: missing ${ENV_DIR}/.env on EC2"
+            exit 1
+          fi
+
+          docker stop "${CONTAINER_NAME}" 2>/dev/null || true
+          docker rm "${CONTAINER_NAME}" 2>/dev/null || true
+
+          docker run -d \
+            --name "${CONTAINER_NAME}" \
+            --restart unless-stopped \
+            --env-file "${ENV_DIR}/.env" \
+            -p "${HOST_PORT}:${CONTAINER_PORT}" \
+            "${IMAGE}:${TAG}"
+
+          docker image prune -f
+          docker ps --filter "name=${CONTAINER_NAME}"
+          REMOTE

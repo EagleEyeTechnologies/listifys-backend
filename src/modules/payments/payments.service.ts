@@ -40,9 +40,7 @@ export async function createRazorpayOrder(input: {
   if (!env.RAZORPAY_KEY_ID || !env.RAZORPAY_KEY_SECRET) {
     throw new AppError(503, "Razorpay not configured", "PAYMENTS_UNAVAILABLE");
   }
-  const auth = Buffer.from(
-    `${env.RAZORPAY_KEY_ID}:${env.RAZORPAY_KEY_SECRET}`,
-  ).toString("base64");
+  const auth = Buffer.from(`${env.RAZORPAY_KEY_ID}:${env.RAZORPAY_KEY_SECRET}`).toString("base64");
   const res = await fetch("https://api.razorpay.com/v1/orders", {
     method: "POST",
     headers: {

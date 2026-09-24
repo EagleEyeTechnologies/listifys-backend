@@ -10,10 +10,7 @@ import {
   createStripePaymentIntent,
   paymentConfigFor,
 } from "../payments/payments.service.js";
-import {
-  createPendingBoostCheckout,
-  expireDueCampaigns,
-} from "./boost.service.js";
+import { createPendingBoostCheckout, expireDueCampaigns } from "./boost.service.js";
 import { BoostCampaign } from "./boostCampaign.model.js";
 import {
   confirmRazorpayPayment,
@@ -47,9 +44,7 @@ boostRouter.get(
   requireAuth,
   asyncHandler(async (req, res) => {
     await expireDueCampaigns();
-    const rows = await BoostCampaign.find({ userId: req.userId })
-      .sort({ createdAt: -1 })
-      .limit(50);
+    const rows = await BoostCampaign.find({ userId: req.userId }).sort({ createdAt: -1 }).limit(50);
     res.json({
       success: true,
       data: {
@@ -84,12 +79,7 @@ boostRouter.post(
   asyncHandler(async (req, res) => {
     const parsed = checkoutSchema.safeParse(req.body);
     if (!parsed.success) {
-      throw new AppError(
-        400,
-        "Invalid payload",
-        "VALIDATION_ERROR",
-        parsed.error.flatten(),
-      );
+      throw new AppError(400, "Invalid payload", "VALIDATION_ERROR", parsed.error.flatten());
     }
 
     const plan = getBoostPlan(parsed.data.planKey, req.countryCode);

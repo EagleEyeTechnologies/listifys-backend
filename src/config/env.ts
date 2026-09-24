@@ -11,9 +11,7 @@ if (nodeEnv === "production") {
 loadDotenv();
 
 const envSchema = z.object({
-  NODE_ENV: z
-    .enum(["development", "test", "production"])
-    .default("development"),
+  NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
   PORT: z.coerce.number().default(5001),
   MONGODB_URI: z.string().min(1, "MONGODB_URI is required"),
   REDIS_URL: z.string().optional(),
@@ -111,15 +109,12 @@ export type Env = z.infer<typeof envSchema>;
 function parseEnv(): Env {
   const parsed = envSchema.safeParse(process.env);
   if (!parsed.success) {
-    const details = parsed.error.issues
-      .map((i) => `${i.path.join(".")}: ${i.message}`)
-      .join("; ");
+    const details = parsed.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; ");
     throw new Error(`Invalid environment: ${details}`);
   }
   const data = parsed.data;
   if (data.NODE_ENV === "production") {
-    const weak =
-      /change-me|dev-access|dev-refresh|localhost-secret|password|secret123/i;
+    const weak = /change-me|dev-access|dev-refresh|localhost-secret|password|secret123/i;
     if (weak.test(data.JWT_ACCESS_SECRET) || weak.test(data.JWT_REFRESH_SECRET)) {
       throw new Error(
         "Invalid environment: JWT secrets look like development placeholders — set strong production secrets",

@@ -82,12 +82,7 @@ adminRouter.get(
   asyncHandler(async (req, res) => {
     const parsed = adminUsersQuerySchema.safeParse(req.query);
     if (!parsed.success) {
-      throw new AppError(
-        400,
-        "Invalid query",
-        "VALIDATION_ERROR",
-        parsed.error.flatten(),
-      );
+      throw new AppError(400, "Invalid query", "VALIDATION_ERROR", parsed.error.flatten());
     }
     const data = await listAdminUsers(parsed.data);
     res.json({ success: true, data });
@@ -99,12 +94,7 @@ adminRouter.patch(
   asyncHandler(async (req, res) => {
     const parsed = patchAdminUserSchema.safeParse(req.body);
     if (!parsed.success) {
-      throw new AppError(
-        400,
-        "Invalid payload",
-        "VALIDATION_ERROR",
-        parsed.error.flatten(),
-      );
+      throw new AppError(400, "Invalid payload", "VALIDATION_ERROR", parsed.error.flatten());
     }
     const id = String(req.params.id);
     const data = await patchAdminUser(id, parsed.data);
@@ -122,12 +112,7 @@ adminRouter.get(
   asyncHandler(async (req, res) => {
     const parsed = adminListingsQuerySchema.safeParse(req.query);
     if (!parsed.success) {
-      throw new AppError(
-        400,
-        "Invalid query",
-        "VALIDATION_ERROR",
-        parsed.error.flatten(),
-      );
+      throw new AppError(400, "Invalid query", "VALIDATION_ERROR", parsed.error.flatten());
     }
     const data = await listAdminListings(parsed.data);
     res.json({ success: true, data });
@@ -147,12 +132,7 @@ adminRouter.patch(
   asyncHandler(async (req, res) => {
     const parsed = patchAdminListingSchema.safeParse(req.body);
     if (!parsed.success) {
-      throw new AppError(
-        400,
-        "Invalid payload",
-        "VALIDATION_ERROR",
-        parsed.error.flatten(),
-      );
+      throw new AppError(400, "Invalid payload", "VALIDATION_ERROR", parsed.error.flatten());
     }
     const id = String(req.params.id);
     const data = await patchAdminListing(id, parsed.data);

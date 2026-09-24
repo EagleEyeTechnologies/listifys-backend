@@ -21,9 +21,4 @@ export const CATEGORY_SLUGS = [
 export type CategorySlug = (typeof CATEGORY_SLUGS)[number];
 export type ListingIntent = "sale" | "wanted" | "free";
 export type CountryCode = "US" | "CA" | "IN";
-export type ListingStatus =
-  | "active"
-  | "sold"
-  | "paused"
-  | "expired"
-  | "removed";
+export type ListingStatus = "active" | "sold" | "paused" | "expired" | "removed";

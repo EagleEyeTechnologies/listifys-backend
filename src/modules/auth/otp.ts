@@ -13,25 +13,15 @@ function otpKey(channel: "email" | "phone", target: string) {
 }
 
 function twilioAuthHeader(): string {
-  return Buffer.from(
-    `${env.TWILIO_ACCOUNT_SID}:${env.TWILIO_AUTH_TOKEN}`,
-  ).toString("base64");
+  return Buffer.from(`${env.TWILIO_ACCOUNT_SID}:${env.TWILIO_AUTH_TOKEN}`).toString("base64");
 }
 
 function twilioSmsConfigured(): boolean {
-  return Boolean(
-    env.TWILIO_ACCOUNT_SID &&
-      env.TWILIO_AUTH_TOKEN &&
-      env.TWILIO_FROM_NUMBER,
-  );
+  return Boolean(env.TWILIO_ACCOUNT_SID && env.TWILIO_AUTH_TOKEN && env.TWILIO_FROM_NUMBER);
 }
 
 function twilioVerifyConfigured(): boolean {
-  return Boolean(
-    env.TWILIO_ACCOUNT_SID &&
-      env.TWILIO_AUTH_TOKEN &&
-      env.TWILIO_VERIFY_SERVICE_SID,
-  );
+  return Boolean(env.TWILIO_ACCOUNT_SID && env.TWILIO_AUTH_TOKEN && env.TWILIO_VERIFY_SERVICE_SID);
 }
 
 function resendEmailConfigured(): boolean {
@@ -70,17 +60,14 @@ async function startTwilioVerify(to: string): Promise<void> {
   const params = new URLSearchParams({ To: to, Channel: "sms" });
   let res: Response;
   try {
-    res = await fetch(
-      `https://verify.twilio.com/v2/Services/${sid}/Verifications`,
-      {
-        method: "POST",
-        headers: {
-          Authorization: `Basic ${twilioAuthHeader()}`,
-          "Content-Type": "application/x-www-form-urlencoded",
-        },
-        body: params.toString(),
+    res = await fetch(`https://verify.twilio.com/v2/Services/${sid}/Verifications`, {
+      method: "POST",
+      headers: {
+        Authorization: `Basic ${twilioAuthHeader()}`,
+        "Content-Type": "application/x-www-form-urlencoded",
       },
-    );
+      body: params.toString(),
+    });
   } catch (err) {
     logger.error("Twilio Verify start network error", {
       to: maskTarget(to),
@@ -106,17 +93,14 @@ async function checkTwilioVerify(to: string, code: string): Promise<boolean> {
   const params = new URLSearchParams({ To: to, Code: code });
   let res: Response;
   try {
-    res = await fetch(
-      `https://verify.twilio.com/v2/Services/${sid}/VerificationCheck`,
-      {
-        method: "POST",
-        headers: {
-          Authorization: `Basic ${twilioAuthHeader()}`,
-          "Content-Type": "application/x-www-form-urlencoded",
-        },
-        body: params.toString(),
+    res = await fetch(`https://verify.twilio.com/v2/Services/${sid}/VerificationCheck`, {
+      method: "POST",
+      headers: {
+        Authorization: `Basic ${twilioAuthHeader()}`,
+        "Content-Type": "application/x-www-form-urlencoded",
       },
-    );
+      body: params.toString(),
+    });
   } catch (err) {
     logger.error("Twilio Verify check network error", {
       to: maskTarget(to),
@@ -143,17 +127,14 @@ async function sendTwilioSms(to: string, body: string): Promise<void> {
   const params = new URLSearchParams({ To: to, From: from, Body: body });
   let res: Response;
   try {
-    res = await fetch(
-      `https://api.twilio.com/2010-04-01/Accounts/${sid}/Messages.json`,
-      {
-        method: "POST",
-        headers: {
-          Authorization: `Basic ${twilioAuthHeader()}`,
-          "Content-Type": "application/x-www-form-urlencoded",
-        },
-        body: params.toString(),
+    res = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${sid}/Messages.json`, {
+      method: "POST",
+      headers: {
+        Authorization: `Basic ${twilioAuthHeader()}`,
+        "Content-Type": "application/x-www-form-urlencoded",
       },
-    );
+      body: params.toString(),
+    });
   } catch (err) {
     logger.error("Twilio SMS network error", {
       to: maskTarget(to),
@@ -218,7 +199,7 @@ export async function issueOtp(
   channel: "email" | "phone",
   target: string,
 ): Promise<{ expiresIn: number; delivery: OtpDelivery }> {
-  let delivery: OtpDelivery = "unavailable";
+  let delivery: OtpDelivery;
 
   logger.info("OTP issue requested", {
     channel,
@@ -234,11 +215,7 @@ export async function issueOtp(
     const e164 = toE164(target);
     if (twilioVerifyConfigured()) {
       await startTwilioVerify(e164);
-      await kv.set(
-        otpKey(channel, target),
-        TWILIO_VERIFY_MARKER,
-        env.OTP_TTL_SECONDS,
-      );
+      await kv.set(otpKey(channel, target), TWILIO_VERIFY_MARKER, env.OTP_TTL_SECONDS);
       delivery = "sms";
       logger.info("OTP issued via Twilio Verify", {
         channel,
@@ -271,11 +248,7 @@ export async function issueOtp(
         channel,
         target: maskTarget(target),
       });
-      throw new AppError(
-        503,
-        "OTP SMS delivery is not configured",
-        "OTP_DELIVERY_UNAVAILABLE",
-      );
+      throw new AppError(503, "OTP SMS delivery is not configured", "OTP_DELIVERY_UNAVAILABLE");
     }
     return { expiresIn: env.OTP_TTL_SECONDS, delivery };
   }
@@ -303,11 +276,7 @@ export async function issueOtp(
       channel,
       target: maskTarget(target),
     });
-    throw new AppError(
-      503,
-      "OTP email delivery is not configured",
-      "OTP_DELIVERY_UNAVAILABLE",
-    );
+    throw new AppError(503, "OTP email delivery is not configured", "OTP_DELIVERY_UNAVAILABLE");
   }
 
   return { expiresIn: env.OTP_TTL_SECONDS, delivery };
