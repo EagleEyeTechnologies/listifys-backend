@@ -45,11 +45,7 @@ async function findActiveEvent(listingId: string) {
     throw new AppError(400, "This event is not available for booking", "EVENT_UNAVAILABLE");
   }
   if (isEventPastFromExtras(listing.extras)) {
-    throw new AppError(
-      400,
-      "This event has ended. Ticket booking is closed.",
-      "EVENT_ENDED",
-    );
+    throw new AppError(400, "This event has ended. Ticket booking is closed.", "EVENT_ENDED");
   }
   return listing;
 }

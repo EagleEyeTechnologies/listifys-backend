@@ -56,12 +56,12 @@ export function assertValidDateOfBirth(value: string): string {
   const raw = String(value || "").trim();
   if (!raw) return "";
 
-  let year = 0;
-  let month = 0;
-  let day = 0;
+  let year: number;
+  let month: number;
+  let day: number;
 
   const iso = raw.match(/^(\d{4})-(\d{2})-(\d{2})$/);
-  const dmy = raw.match(/^(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{4})$/);
+  const dmy = raw.match(/^(\d{1,2})[/\-.](\d{1,2})[/\-.](\d{4})$/);
   if (iso) {
     year = Number(iso[1]);
     month = Number(iso[2]);
@@ -83,11 +83,7 @@ export function assertValidDateOfBirth(value: string): string {
     throw new Error("Enter a valid date of birth");
   }
   const dt = new Date(Date.UTC(year, month - 1, day));
-  if (
-    dt.getUTCFullYear() !== year ||
-    dt.getUTCMonth() !== month - 1 ||
-    dt.getUTCDate() !== day
-  ) {
+  if (dt.getUTCFullYear() !== year || dt.getUTCMonth() !== month - 1 || dt.getUTCDate() !== day) {
     throw new Error("Enter a valid date of birth");
   }
   if (dt.getTime() > Date.UTC(now.getFullYear(), now.getMonth(), now.getDate())) {
@@ -96,10 +92,7 @@ export function assertValidDateOfBirth(value: string): string {
   const age =
     currentYear -
     year -
-    (now.getMonth() + 1 < month ||
-    (now.getMonth() + 1 === month && now.getDate() < day)
-      ? 1
-      : 0);
+    (now.getMonth() + 1 < month || (now.getMonth() + 1 === month && now.getDate() < day) ? 1 : 0);
   if (age < 13) {
     throw new Error("You must be at least 13 years old");
   }

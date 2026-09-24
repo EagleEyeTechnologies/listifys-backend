@@ -172,10 +172,7 @@ export async function updateOwnSellerReview(
   };
 }
 
-export async function deleteOwnSellerReview(
-  reviewerId: string,
-  reviewId: string,
-) {
+export async function deleteOwnSellerReview(reviewerId: string, reviewId: string) {
   if (!mongoose.isValidObjectId(reviewId)) {
     throw new AppError(400, "Invalid review id", "VALIDATION_ERROR");
   }

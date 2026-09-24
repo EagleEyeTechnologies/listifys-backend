@@ -40,9 +40,7 @@ function unreadEntries(
 async function main() {
   await connectMongo();
 
-  const all = (await Conversation.find({})
-    .lean()
-    .exec()) as unknown as LeanConvo[];
+  const all = (await Conversation.find({}).lean().exec()) as unknown as LeanConvo[];
 
   const groups = new Map<string, LeanConvo[]>();
   for (const c of all) {
@@ -65,10 +63,7 @@ async function main() {
       if (!only.participantKey || only.participantKey !== key) {
         keysBackfilled += 1;
         if (write) {
-          await Conversation.updateOne(
-            { _id: only._id },
-            { $set: { participantKey: key } },
-          );
+          await Conversation.updateOne({ _id: only._id }, { $set: { participantKey: key } });
         }
       }
       continue;
@@ -117,9 +112,7 @@ async function main() {
       }
     }
 
-    let latestAt = canonical.lastMessageAt
-      ? new Date(canonical.lastMessageAt)
-      : null;
+    let latestAt = canonical.lastMessageAt ? new Date(canonical.lastMessageAt) : null;
     let latestText = canonical.lastMessageText || "";
     for (const c of sorted) {
       const at = c.lastMessageAt ? new Date(c.lastMessageAt) : null;
