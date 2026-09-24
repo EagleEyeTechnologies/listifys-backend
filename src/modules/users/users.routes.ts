@@ -26,6 +26,9 @@ import {
   verifyEmailChange,
   requestPhoneChange,
   verifyPhoneChange,
+  requestAccountDeletion,
+  cancelAccountDeletion,
+  purgeExpiredAccountDeletions,
 } from "./users.service.js";
 import { z } from "zod";
 import { sendFcmToTokens, fcmReady } from "../notifications/fcm.service.js";
@@ -36,6 +39,7 @@ usersRouter.get(
   "/me",
   requireAuth,
   asyncHandler(async (req, res) => {
+    void purgeExpiredAccountDeletions(5).catch(() => undefined);
     const user = await User.findById(req.userId);
     if (!user || !user.isActive) {
       throw new AppError(401, "User not found", "UNAUTHORIZED");
@@ -58,6 +62,24 @@ usersRouter.patch(
       );
     }
     const data = await updateMe(req.userId!, parsed.data);
+    res.json({ success: true, data });
+  }),
+);
+
+usersRouter.post(
+  "/me/delete",
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const data = await requestAccountDeletion(req.userId!);
+    res.json({ success: true, data });
+  }),
+);
+
+usersRouter.post(
+  "/me/delete/cancel",
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const data = await cancelAccountDeletion(req.userId!);
     res.json({ success: true, data });
   }),
 );

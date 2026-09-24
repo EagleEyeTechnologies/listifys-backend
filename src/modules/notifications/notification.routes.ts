@@ -2,6 +2,7 @@ import { Router } from "express";
 import { asyncHandler } from "../../utils/asyncHandler.js";
 import { requireAuth } from "../../middleware/auth.js";
 import {
+  clearAllNotifications,
   deleteNotification,
   listNotifications,
   markAllRead,
@@ -44,6 +45,14 @@ notificationsRouter.post(
   "/read-all",
   asyncHandler(async (req, res) => {
     const data = await markAllRead(req.userId!);
+    res.json({ success: true, data });
+  }),
+);
+
+notificationsRouter.delete(
+  "/",
+  asyncHandler(async (req, res) => {
+    const data = await clearAllNotifications(req.userId!);
     res.json({ success: true, data });
   }),
 );

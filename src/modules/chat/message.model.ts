@@ -29,6 +29,24 @@ const messageSchema = new Schema(
       ref: "User",
       default: [],
     },
+    /** Recipient received the message (WhatsApp double-grey). */
+    deliveredTo: {
+      type: [Schema.Types.ObjectId],
+      ref: "User",
+      default: [],
+    },
+    /** Listing context when this message was sent (multi-listing threads). */
+    listingId: {
+      type: Schema.Types.ObjectId,
+      ref: "Listing",
+      default: null,
+    },
+    listingTitle: { type: String, default: "" },
+    listingImage: { type: String, default: "" },
+    listingPrice: { type: Number, default: null },
+    listingHref: { type: String, default: "" },
+    editedAt: { type: Date, default: null },
+    deletedAt: { type: Date, default: null },
   },
   { timestamps: true },
 );

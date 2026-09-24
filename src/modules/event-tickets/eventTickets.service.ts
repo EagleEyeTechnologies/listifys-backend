@@ -5,6 +5,7 @@ import { Listing } from "../listings/listing.model.js";
 import { User } from "../users/user.model.js";
 import { createNotification } from "../notifications/notification.service.js";
 import { AppError } from "../../utils/AppError.js";
+import { isEventPastFromExtras } from "./eventDate.js";
 import { logger } from "../../utils/logger.js";
 import { absolutizeMediaUrl } from "../../utils/mediaUrl.js";
 import type { CountryCode } from "../../types/domain.js";
@@ -42,6 +43,13 @@ async function findActiveEvent(listingId: string) {
   }
   if (listing.status !== "active") {
     throw new AppError(400, "This event is not available for booking", "EVENT_UNAVAILABLE");
+  }
+  if (isEventPastFromExtras(listing.extras)) {
+    throw new AppError(
+      400,
+      "This event has ended. Ticket booking is closed.",
+      "EVENT_ENDED",
+    );
   }
   return listing;
 }

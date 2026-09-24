@@ -5,6 +5,7 @@ import { Listing } from "../listings/listing.model.js";
 import { User } from "../users/user.model.js";
 import { AppError } from "../../utils/AppError.js";
 import { listingHrefFromDoc } from "../chat/listingHref.js";
+import { startConversation } from "../chat/chat.service.js";
 import { createNotification } from "../notifications/notification.service.js";
 import { absolutizeMediaUrl } from "../../utils/mediaUrl.js";
 
@@ -110,9 +111,22 @@ export async function createOffer(
     type: "offer",
     title: `New offer on ${listing.title}`,
     body: `${buyer?.name || "Someone"} offered ${listing.currency} ${input.amount}`,
-    href: "/profile?tab=offers",
+    href: "/profile/offers",
     image: absolutizeMediaUrl(listing.images?.[0] || buyer?.avatar || ""),
   });
+
+  // Reuse the same 1:1 user conversation (listing is context only).
+  try {
+    await startConversation(buyerId, {
+      recipientId: sellerId,
+      listingId: listing._id.toString(),
+      text: `Offer on "${listing.title}": ${listing.currency} ${input.amount}${
+        input.message?.trim() ? `\n\n${input.message.trim()}` : ""
+      }`,
+    });
+  } catch {
+    /* offer already saved; chat notify is best-effort */
+  }
 
   return serialize(offer, buyerId);
 }
@@ -154,7 +168,7 @@ export async function updateOffer(
       offer.status === "countered"
         ? `Seller countered at ${offer.currency} ${offer.counterAmount}`
         : `Your offer was ${offer.status}`,
-    href: "/profile?tab=offers",
+    href: "/profile/offers",
     image: offer.listingImage,
   });
 

@@ -6,6 +6,91 @@ import { Listing } from "../listings/listing.model.js";
 import { Conversation } from "../chat/conversation.model.js";
 import { SellerReview } from "../reviews/sellerReview.model.js";
 import { ModerationReport } from "../admin/moderationReport.model.js";
+import { createNotification } from "../notifications/notification.service.js";
+import { env, getAdminEmails } from "../../config/env.js";
+import { logger } from "../../utils/logger.js";
+
+async function notifyReportSubmitted(input: {
+  reportId: string;
+  type: string;
+  subject: string;
+  reason: string;
+  reporterName: string;
+  reporterId: string;
+  duplicate?: boolean;
+}) {
+  const body = input.duplicate
+    ? `Your report on “${input.subject}” was already on file. Our team is still reviewing it.`
+    : `Thanks — we received your report on “${input.subject}” (${input.reason}). Our team will review it.`;
+
+  // Confirmation for the reporter
+  try {
+    await createNotification({
+      userId: input.reporterId,
+      type: "system",
+      title: input.duplicate ? "Report already submitted" : "Report received",
+      body,
+      href: "/notifications",
+    });
+  } catch (err) {
+    logger.warn("Failed to notify reporter about report", {
+      err: err instanceof Error ? err.message : String(err),
+    });
+  }
+
+  const adminEmails = getAdminEmails();
+  if (!adminEmails.length) return;
+
+  const admins = await User.find({
+    email: { $in: adminEmails },
+    isActive: { $ne: false },
+  }).select("_id email");
+
+  const adminBody = `${input.reporterName} reported ${input.type} “${input.subject}”: ${input.reason}`;
+  for (const admin of admins) {
+    try {
+      await createNotification({
+        userId: admin._id.toString(),
+        type: "system",
+        title: input.duplicate ? "Duplicate user report" : "New user report",
+        body: adminBody,
+        href: "/admin/moderation",
+      });
+    } catch {
+      /* best-effort */
+    }
+  }
+
+  if (!env.RESEND_API_KEY || !env.EMAIL_FROM || input.duplicate) return;
+
+  try {
+    await fetch("https://api.resend.com/emails", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${env.RESEND_API_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        from: env.EMAIL_FROM,
+        to: adminEmails,
+        subject: `[Listifys] New ${input.type} report: ${input.subject}`,
+        text: [
+          `Report ID: ${input.reportId}`,
+          `Type: ${input.type}`,
+          `Subject: ${input.subject}`,
+          `Reason: ${input.reason}`,
+          `Reporter: ${input.reporterName}`,
+          "",
+          `Open moderation: ${env.CLIENT_URL}/admin/moderation`,
+        ].join("\n"),
+      }),
+    });
+  } catch (err) {
+    logger.warn("Failed to email admins about report", {
+      err: err instanceof Error ? err.message : String(err),
+    });
+  }
+}
 
 export const createUserReportSchema = z.object({
   type: z.enum(["listing", "user", "image", "chat", "review"]),
@@ -123,6 +208,15 @@ export async function createUserReport(
     createdAt: { $gte: since },
   });
   if (existing) {
+    void notifyReportSubmitted({
+      reportId: existing._id.toString(),
+      type,
+      subject: existing.subject || subject || "Report",
+      reason: existing.reason || input.reason.trim(),
+      reporterName,
+      reporterId,
+      duplicate: true,
+    });
     return {
       id: existing._id.toString(),
       status: existing.status,
@@ -146,6 +240,15 @@ export async function createUserReport(
     status: "open",
     priority: priorityFromReason(input.reason),
     source: "user_report",
+  });
+
+  void notifyReportSubmitted({
+    reportId: doc._id.toString(),
+    type,
+    subject,
+    reason: input.reason.trim(),
+    reporterName,
+    reporterId,
   });
 
   return { id: doc._id.toString(), status: doc.status, duplicate: false };
