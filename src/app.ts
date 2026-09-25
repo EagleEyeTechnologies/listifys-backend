@@ -7,6 +7,7 @@ import { getAllowedOrigins, isOriginAllowed, isProd } from "./config/origins.js"
 import { requestLogger } from "./middleware/requestLogger.js";
 import { errorHandler } from "./middleware/errorHandler.js";
 import { attachMarket } from "./middleware/market.js";
+import { optionalAuth } from "./middleware/auth.js";
 import { globalRateLimit } from "./middleware/rateLimit.js";
 import { healthRouter } from "./modules/health/health.routes.js";
 import { authRouter } from "./modules/auth/auth.routes.js";
@@ -67,6 +68,9 @@ export function createApp() {
   app.use(express.urlencoded({ extended: true }));
   app.use(cookieParser());
   app.use(requestLogger);
+  // Attach userId when a valid token is present so rate limits key per user
+  // (avoids shared office/NAT IPs exhausting one bucket during team testing).
+  app.use(optionalAuth);
   app.use(globalRateLimit);
   app.use(attachMarket);
 
