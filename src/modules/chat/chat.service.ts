@@ -7,7 +7,10 @@ import { Listing } from "../listings/listing.model.js";
 import { AppError } from "../../utils/AppError.js";
 import { listingHrefFromDoc } from "./listingHref.js";
 import { decryptChatText } from "./chat.crypto.js";
-import { createNotification } from "../notifications/notification.service.js";
+import {
+  createNotification,
+  markMessageNotificationsRead,
+} from "../notifications/notification.service.js";
 import { isUserOnline, isUserOnlineRedis } from "./presence.js";
 import { absolutizeMediaUrl } from "../../utils/mediaUrl.js";
 import { getSellerReviewStats } from "../reviews/reviews.service.js";
@@ -19,28 +22,35 @@ export const startConversationSchema = z.object({
   text: z.string().min(1).max(5000).optional(),
 });
 
-export const sendMessageSchema = z.object({
-  text: z.string().min(1).max(5000),
+const attachmentSchema = z.object({
+  url: z.string().min(1).max(2000),
+  name: z.string().max(200).optional(),
+  mime: z.string().max(120).optional(),
 });
+
+export const sendMessageSchema = z
+  .object({
+    text: z.string().max(5000).optional().default(""),
+    attachments: z.array(attachmentSchema).max(4).optional(),
+  })
+  .refine((value) => value.text.trim().length > 0 || (value.attachments?.length || 0) > 0, {
+    message: "Message is empty",
+  });
 
 export const editMessageSchema = z.object({
   text: z.string().min(1).max(5000),
 });
 
-/** Relative list time — ms diffs are timezone-safe. */
+/** Inbox date: Today, Yesterday, or a short calendar day. Clients reformat with lastMessageAt. */
 function formatListTime(date?: Date | null) {
   if (!date) return "";
-  const diff = Date.now() - date.getTime();
-  const mins = Math.floor(diff / 60000);
-  if (mins < 60) return `${Math.max(1, mins)}m`;
-  const hours = Math.floor(mins / 60);
-  if (hours < 24) return `${hours}h`;
-  // Absolute calendar day in the viewer's locale is applied on clients when needed;
-  // list preview stays relative / short date from the Instant.
-  return new Intl.DateTimeFormat(undefined, {
-    month: "short",
-    day: "numeric",
-  }).format(date);
+  const day = new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
+  const today = new Date();
+  const todayStart = new Date(today.getFullYear(), today.getMonth(), today.getDate()).getTime();
+  const diffDays = Math.round((todayStart - day) / 86400000);
+  if (diffDays === 0) return "Today";
+  if (diffDays === 1) return "Yesterday";
+  return new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric" }).format(date);
 }
 
 function memberSinceYear(createdAt?: Date | null): string {
@@ -82,6 +92,13 @@ export function serializeMessage(msg: InstanceType<typeof Message>, viewerId: st
   const readByPeer = (msg.readBy || []).some((id) => id.toString() !== senderId);
   const deliveredToPeer =
     readByPeer || (msg.deliveredTo || []).some((id) => id.toString() !== senderId);
+  const attachments = (msg.deletedAt ? [] : msg.attachments || [])
+    .map((file) => ({
+      url: String(file.url || ""),
+      name: String(file.name || ""),
+      mime: String(file.mime || ""),
+    }))
+    .filter((file) => file.url);
   const listingId = msg.listingId?.toString?.() || null;
   const listingTitle = (msg.listingTitle || "").trim();
   return {
@@ -89,6 +106,7 @@ export function serializeMessage(msg: InstanceType<typeof Message>, viewerId: st
     kind: msg.kind === "system" ? "system" : "text",
     from: mine ? "me" : "them",
     text: deleted ? "This message was deleted" : decryptChatText(msg.text),
+    attachments,
     /** Prefer clients formatting `createdAt` in the user's local timezone. */
     time: "",
     createdAt: createdAt.toISOString(),
@@ -127,7 +145,10 @@ async function markDeliveredForViewer(conversationId: string, viewerId: string) 
 }
 
 export async function listConversations(userId: string) {
-  const rows = await Conversation.find({ participants: userId })
+  const rows = await Conversation.find({
+    participants: userId,
+    hiddenFor: { $ne: userId },
+  })
     .sort({ lastMessageAt: -1, updatedAt: -1 })
     .limit(100);
 
@@ -226,6 +247,7 @@ export async function listConversations(userId: string) {
       online: otherId ? Boolean(onlineMap.get(otherId)) : false,
       verified: false,
       lastMessage: decryptChatText(c.lastMessageText || ""),
+      lastMessageAt: c.lastMessageAt ? new Date(c.lastMessageAt).toISOString() : null,
       time: formatListTime(c.lastMessageAt),
       unread,
       listing: {
@@ -284,6 +306,12 @@ export async function getMessages(userId: string, conversationId: string) {
     await conversation.save();
   }
 
+  try {
+    await markMessageNotificationsRead(userId, conversationId);
+  } catch {
+    /* opening the thread still succeeds if notification cleanup fails */
+  }
+
   const fresh = await Message.find({ conversation: conversationId })
     .sort({ createdAt: 1 })
     .limit(200);
@@ -303,7 +331,11 @@ export async function sendMessage(
   userId: string,
   conversationId: string,
   text: string,
-  opts?: { kind?: "text" | "system"; createdAt?: Date },
+  opts?: {
+    kind?: "text" | "system";
+    createdAt?: Date;
+    attachments?: { url: string; name?: string; mime?: string }[];
+  },
 ) {
   if (!mongoose.isValidObjectId(conversationId)) {
     throw new AppError(404, "Conversation not found", "NOT_FOUND");
@@ -315,10 +347,23 @@ export async function sendMessage(
 
   const kind = opts?.kind === "system" ? "system" : "text";
   const storedText = text.trim();
+  const attachments = (opts?.attachments || [])
+    .filter((file) => file.url.trim())
+    .slice(0, 4)
+    .map((file) => ({
+      url: file.url.trim(),
+      name: (file.name || "").trim(),
+      mime: (file.mime || "").trim(),
+    }));
+  if (!storedText && !attachments.length) {
+    throw new AppError(400, "Message is empty", "VALIDATION_ERROR");
+  }
+  const preview = storedText || (attachments.length ? "Photo" : "");
   const message = await Message.create({
     conversation: conversation._id,
     sender: userId,
     text: storedText,
+    attachments,
     kind,
     readBy: [userId],
     deliveredTo: [userId],
@@ -330,8 +375,11 @@ export async function sendMessage(
     ...(opts?.createdAt ? { createdAt: opts.createdAt, updatedAt: opts.createdAt } : {}),
   });
 
-  conversation.lastMessageText = storedText;
+  conversation.lastMessageText = preview;
   conversation.lastMessageAt = new Date();
+  if (conversation.hiddenFor?.length) {
+    conversation.hiddenFor = [];
+  }
   const recipients: string[] = [];
   for (const p of conversation.participants) {
     const pid = p.toString();
@@ -366,7 +414,7 @@ export async function sendMessage(
         userId: rid,
         type: "message",
         title: `New message from ${sender?.name || "Someone"}`,
-        body: text.slice(0, 140),
+        body: preview.slice(0, 140),
         href: `/messages?c=${conversation._id.toString()}`,
         image: absolutizeMediaUrl(sender?.avatar),
       });
@@ -572,7 +620,8 @@ export async function deleteMessage(userId: string, messageId: string) {
   }
 
   message.deletedAt = new Date();
-  message.text = "";
+  // Schema requires non-empty text. Clients show “This message was deleted” when deletedAt is set.
+  message.text = "deleted";
   await message.save();
 
   const latest = await Message.findOne({ conversation: conversation._id })
@@ -598,10 +647,14 @@ export async function deleteConversation(userId: string, conversationId: string)
   if (!conversation || !conversation.participants.some((p) => p.toString() === userId)) {
     throw new AppError(404, "Conversation not found", "NOT_FOUND");
   }
-  // Soft-hide for this user by clearing their unread and removing them is too destructive
-  // for a shared thread. Delete the whole thread only if both would agree — for now,
-  // remove the conversation document and its messages (participant-initiated clear).
-  await Message.deleteMany({ conversation: conversation._id });
-  await Conversation.deleteOne({ _id: conversation._id });
+  const alreadyHidden = (conversation.hiddenFor || []).some((id) => id.toString() === userId);
+  if (!alreadyHidden) {
+    conversation.hiddenFor = [
+      ...(conversation.hiddenFor || []),
+      new mongoose.Types.ObjectId(userId),
+    ];
+  }
+  conversation.unreadBy?.set(userId, 0);
+  await conversation.save();
   return { ok: true as const };
 }

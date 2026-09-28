@@ -54,6 +54,8 @@ function publicUrlForKey(key: string, uploadUrl?: string) {
 }
 
 function normalizeExt(raw: string | undefined, contentType: string) {
+  if (contentType === "video/quicktime") return "mov";
+  if (contentType === "video/mp4") return "mp4";
   const fromType = contentType.split("/")[1]?.split(";")[0]?.trim();
   const ext = (raw || fromType || "jpg").toLowerCase().replace(/[^a-z0-9]/g, "");
   if (!ext || ext.length > 5) return "jpg";
@@ -114,14 +116,16 @@ mediaRouter.post(
   requireAuth,
   express.raw({
     type: "*/*",
-    limit: "12mb",
+    limit: "25mb",
   }),
   asyncHandler(async (req, res) => {
     const contentType = String(req.headers["content-type"] || "image/jpeg")
       .split(";")[0]
       .trim();
-    if (!contentType.startsWith("image/") && contentType !== "application/octet-stream") {
-      throw new AppError(400, "Content-Type must be an image", "VALIDATION_ERROR");
+    const isImage = contentType.startsWith("image/");
+    const isVideo = contentType === "video/mp4" || contentType === "video/quicktime";
+    if (!isImage && !isVideo && contentType !== "application/octet-stream") {
+      throw new AppError(400, "Content-Type must be an image or video", "VALIDATION_ERROR");
     }
 
     const folderRaw = String(req.query.folder || "listings");
@@ -134,8 +138,13 @@ mediaRouter.post(
     if (!body.length) {
       throw new AppError(400, "Empty upload body", "VALIDATION_ERROR");
     }
-    if (body.length > 12 * 1024 * 1024) {
-      throw new AppError(413, "File too large (max 12MB)", "PAYLOAD_TOO_LARGE");
+    const maxBytes = isVideo ? 20 * 1024 * 1024 : 12 * 1024 * 1024;
+    if (body.length > maxBytes) {
+      throw new AppError(
+        413,
+        isVideo ? "Video too large (max 20MB)" : "File too large (max 12MB)",
+        "PAYLOAD_TOO_LARGE",
+      );
     }
 
     const key = `${folder}/${req.userId}/${randomUUID()}.${ext}`;
@@ -156,9 +165,7 @@ mediaRouter.post(
         Bucket: env.AWS_S3_BUCKET_NAME,
         Key: key,
         Body: body,
-        ContentType: contentType.startsWith("image/")
-          ? contentType
-          : `image/${ext === "jpg" ? "jpeg" : ext}`,
+        ContentType: isImage || isVideo ? contentType : `image/${ext === "jpg" ? "jpeg" : ext}`,
       }),
     );
 

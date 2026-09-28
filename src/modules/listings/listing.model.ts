@@ -40,6 +40,7 @@ const listingSchema = new Schema(
     },
     condition: { type: String, trim: true, default: "" },
     images: { type: [String], default: [] },
+    video: { type: String, trim: true, default: "" },
     location: { type: String, required: true, trim: true },
     city: { type: String, required: true, trim: true, index: true },
     coordinates: { type: pointSchema },

@@ -85,9 +85,16 @@ export async function toggleCompare(userId: string, listingId: string) {
       throw new AppError(400, `Compare up to ${MAX_COMPARE} listings`, "COMPARE_LIMIT");
     }
     if (mongoose.isValidObjectId(listingId)) {
-      const listing = await Listing.findById(listingId);
+      const listing = await Listing.findById(listingId).select("category status");
       if (!listing || listing.status === "removed") {
         throw new AppError(404, "Listing not found", "NOT_FOUND");
+      }
+      const existingId = ids.find((id) => mongoose.isValidObjectId(id));
+      if (existingId) {
+        const existing = await Listing.findById(existingId).select("category");
+        if (existing && existing.category !== listing.category) {
+          throw new AppError(400, "Compare listings from the same category", "COMPARE_CATEGORY");
+        }
       }
     }
     ids.push(listingId);

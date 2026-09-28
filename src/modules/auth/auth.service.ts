@@ -244,6 +244,27 @@ export async function verifyEmailOtp(input: z.infer<typeof emailVerifySchema>) {
   return { user: publicUser(user), ...tokens };
 }
 
+async function findUserByPhone(phoneCode: string, phone: string, rawPhone?: string) {
+  const parts = normalizePhoneParts(phoneCode, phone);
+  const code = parts.phoneCode || phoneCode;
+  const national = parts.phone || phone;
+  return (
+    (await User.findOne({ phone: national, phoneCode: code })) ||
+    (rawPhone ? await User.findOne({ phone: rawPhone }) : null) ||
+    (await User.findOne({ phone: national })) ||
+    (await User.findOne({ phone: `${code}${national}` })) ||
+    (await User.findOne({ phone: `+${code.replace("+", "")}${national}` }))
+  );
+}
+
+function phoneNotRegistered() {
+  return new AppError(
+    404,
+    "This mobile number is not registered. Please create an account.",
+    "PHONE_NOT_REGISTERED",
+  );
+}
+
 export async function requestPhoneOtp(
   phone: string,
   phoneCode: string,
@@ -260,12 +281,9 @@ export async function requestPhoneOtp(
     );
   }
 
+  const existing = await findUserByPhone(normalized.phoneCode, normalized.phone, phone);
+
   if (purpose === "register") {
-    const existing =
-      (await User.findOne({
-        phone: normalized.phone,
-        phoneCode: normalized.phoneCode,
-      })) || (await User.findOne({ phone: normalized.phone }));
     if (existing) {
       throw new AppError(
         409,
@@ -273,6 +291,8 @@ export async function requestPhoneOtp(
         "PHONE_EXISTS",
       );
     }
+  } else if (!existing) {
+    throw phoneNotRegistered();
   }
 
   return issueOtp("phone", `${normalized.phoneCode}:${normalized.phone}`);
@@ -295,19 +315,20 @@ export async function verifyPhoneOtp(input: z.infer<typeof phoneVerifySchema>) {
   const parts = normalizePhoneParts(normalized.phoneCode, normalized.phone);
   const phoneCode = parts.phoneCode || normalized.phoneCode;
   const phone = parts.phone || normalized.phone;
+  const purpose = input.purpose === "register" ? "register" : "login";
 
-  let user =
-    (await User.findOne({ phone, phoneCode })) ||
-    (await User.findOne({ phone: input.phone })) ||
-    (await User.findOne({ phone: `${phoneCode}${phone}` })) ||
-    (await User.findOne({ phone: `+${phoneCode.replace("+", "")}${phone}` }));
+  let user = await findUserByPhone(phoneCode, phone, input.phone);
 
-  if (input.purpose === "register" && user) {
+  if (purpose === "register" && user) {
     throw new AppError(
       409,
       "This mobile number is already registered. Please sign in.",
       "PHONE_EXISTS",
     );
+  }
+
+  if (!user && purpose === "login") {
+    throw phoneNotRegistered();
   }
 
   if (!user) {

@@ -96,6 +96,20 @@ export async function unreadCount(userId: string) {
   return Notification.countDocuments({ user: userId, read: false });
 }
 
+/** Mark message alerts for this thread read when the user opens the chat itself. */
+export async function markMessageNotificationsRead(userId: string, conversationId: string) {
+  if (!mongoose.isValidObjectId(conversationId)) return;
+  await Notification.updateMany(
+    {
+      user: userId,
+      read: false,
+      type: "message",
+      href: { $regex: conversationId },
+    },
+    { $set: { read: true } },
+  );
+}
+
 export async function markRead(userId: string, id: string) {
   if (!mongoose.isValidObjectId(id)) {
     throw new AppError(404, "Notification not found", "NOT_FOUND");
