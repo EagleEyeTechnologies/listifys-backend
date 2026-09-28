@@ -15,9 +15,22 @@ const messageSchema = new Schema(
     },
     text: {
       type: String,
-      required: true,
       trim: true,
       maxlength: 5000,
+      default: "",
+    },
+    attachments: {
+      type: [
+        new Schema(
+          {
+            url: { type: String, required: true, trim: true },
+            name: { type: String, trim: true, default: "" },
+            mime: { type: String, trim: true, default: "" },
+          },
+          { _id: false },
+        ),
+      ],
+      default: [],
     },
     kind: {
       type: String,

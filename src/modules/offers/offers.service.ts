@@ -101,7 +101,7 @@ export async function createOffer(buyerId: string, input: z.infer<typeof createO
     type: "offer",
     title: `New offer on ${listing.title}`,
     body: `${buyer?.name || "Someone"} offered ${listing.currency} ${input.amount}`,
-    href: "/profile/offers",
+    href: "/profile?tab=offers",
     image: absolutizeMediaUrl(listing.images?.[0] || buyer?.avatar || ""),
   });
 
@@ -158,7 +158,7 @@ export async function updateOffer(
       offer.status === "countered"
         ? `Seller countered at ${offer.currency} ${offer.counterAmount}`
         : `Your offer was ${offer.status}`,
-    href: "/profile/offers",
+    href: "/profile?tab=offers",
     image: offer.listingImage,
   });
 

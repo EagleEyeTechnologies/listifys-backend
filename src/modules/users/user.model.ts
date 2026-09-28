@@ -63,6 +63,7 @@ const userSchema = new Schema(
     /** When set, account will be permanently deleted after this timestamp (7-day grace). */
     scheduledDeletionAt: { type: Date, default: null },
     deletionRequestedAt: { type: Date, default: null },
+    deletionReason: { type: String, default: "" },
     sellerPremium: {
       status: { type: String, default: "none" },
       isPremiumSeller: { type: Boolean, default: false },

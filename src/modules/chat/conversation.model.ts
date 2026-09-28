@@ -27,6 +27,11 @@ const conversationSchema = new Schema(
       of: Number,
       default: {},
     },
+    /** Users who removed this chat from their own inbox. Messages stay for everyone else. */
+    hiddenFor: {
+      type: [{ type: Schema.Types.ObjectId, ref: "User" }],
+      default: [],
+    },
   },
   { timestamps: true },
 );

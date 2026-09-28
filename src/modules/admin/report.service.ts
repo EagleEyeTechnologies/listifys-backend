@@ -9,6 +9,29 @@ import { ModerationReport } from "../admin/moderationReport.model.js";
 import { createNotification } from "../notifications/notification.service.js";
 import { env, getAdminEmails } from "../../config/env.js";
 import { logger } from "../../utils/logger.js";
+import { getIo } from "../chat/socket.js";
+
+async function sendReportEmail(to: string[], subject: string, text: string) {
+  const recipients = [...new Set(to.map((email) => email.trim()).filter(Boolean))];
+  if (!recipients.length || !env.RESEND_API_KEY || !env.EMAIL_FROM) return;
+  const res = await fetch("https://api.resend.com/emails", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${env.RESEND_API_KEY}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      from: env.EMAIL_FROM,
+      to: recipients,
+      subject,
+      text,
+    }),
+  });
+  if (!res.ok) {
+    const detail = await res.text().catch(() => "");
+    logger.warn("Report email failed", { status: res.status, detail: detail.slice(0, 200) });
+  }
+}
 
 async function notifyReportSubmitted(input: {
   reportId: string;
@@ -17,25 +40,41 @@ async function notifyReportSubmitted(input: {
   reason: string;
   reporterName: string;
   reporterId: string;
+  reporterEmail?: string;
   duplicate?: boolean;
 }) {
   const body = input.duplicate
     ? `Your report on “${input.subject}” was already on file. Our team is still reviewing it.`
     : `Thanks — we received your report on “${input.subject}” (${input.reason}). Our team will review it.`;
+  const title = input.duplicate ? "Report already submitted" : "Report received";
 
-  // Confirmation for the reporter
   try {
     await createNotification({
       userId: input.reporterId,
       type: "system",
-      title: input.duplicate ? "Report already submitted" : "Report received",
+      title,
       body,
       href: "/notifications",
     });
+    getIo()?.to(`user:${input.reporterId}`).emit("notification:new", { title, body });
   } catch (err) {
     logger.warn("Failed to notify reporter about report", {
       err: err instanceof Error ? err.message : String(err),
     });
+  }
+
+  if (input.reporterEmail) {
+    try {
+      await sendReportEmail(
+        [input.reporterEmail],
+        `[Listifys] ${title}`,
+        [body, "", `Report ID: ${input.reportId}`].join("\n"),
+      );
+    } catch (err) {
+      logger.warn("Failed to email reporter about report", {
+        err: err instanceof Error ? err.message : String(err),
+      });
+    }
   }
 
   const adminEmails = getAdminEmails();
@@ -56,35 +95,29 @@ async function notifyReportSubmitted(input: {
         body: adminBody,
         href: "/admin/moderation",
       });
+      getIo()?.to(`user:${admin._id.toString()}`).emit("notification:new", {
+        title: "New user report",
+        body: adminBody,
+      });
     } catch {
       /* best-effort */
     }
   }
 
-  if (!env.RESEND_API_KEY || !env.EMAIL_FROM || input.duplicate) return;
+  if (input.duplicate) return;
 
   try {
-    await fetch("https://api.resend.com/emails", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${env.RESEND_API_KEY}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        from: env.EMAIL_FROM,
-        to: adminEmails,
-        subject: `[Listifys] New ${input.type} report: ${input.subject}`,
-        text: [
-          `Report ID: ${input.reportId}`,
-          `Type: ${input.type}`,
-          `Subject: ${input.subject}`,
-          `Reason: ${input.reason}`,
-          `Reporter: ${input.reporterName}`,
-          "",
-          `Open moderation: ${env.CLIENT_URL}/admin/moderation`,
-        ].join("\n"),
-      }),
-    });
+    await sendReportEmail(
+      adminEmails,
+      `[Listifys] New ${input.type} report: ${input.subject}`,
+      [
+        `Report ID: ${input.reportId}`,
+        `Type: ${input.type}`,
+        `Subject: ${input.subject}`,
+        `Reason: ${input.reason}`,
+        `Reporter: ${input.reporterName}`,
+      ].join("\n"),
+    );
   } catch (err) {
     logger.warn("Failed to email admins about report", {
       err: err instanceof Error ? err.message : String(err),
@@ -200,13 +233,14 @@ export async function createUserReport(
     createdAt: { $gte: since },
   });
   if (existing) {
-    void notifyReportSubmitted({
+    await notifyReportSubmitted({
       reportId: existing._id.toString(),
       type,
       subject: existing.subject || subject || "Report",
       reason: existing.reason || input.reason.trim(),
       reporterName,
       reporterId,
+      reporterEmail: reporter.email || undefined,
       duplicate: true,
     });
     return {
@@ -234,13 +268,14 @@ export async function createUserReport(
     source: "user_report",
   });
 
-  void notifyReportSubmitted({
+  await notifyReportSubmitted({
     reportId: doc._id.toString(),
     type,
     subject,
     reason: input.reason.trim(),
     reporterName,
     reporterId,
+    reporterEmail: reporter.email || undefined,
   });
 
   return { id: doc._id.toString(), status: doc.status, duplicate: false };

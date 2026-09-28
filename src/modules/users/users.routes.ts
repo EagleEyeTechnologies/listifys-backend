@@ -61,7 +61,15 @@ usersRouter.post(
   "/me/delete",
   requireAuth,
   asyncHandler(async (req, res) => {
-    const data = await requestAccountDeletion(req.userId!);
+    const parsed = z.object({ reason: z.string().trim().min(3).max(500) }).safeParse(req.body);
+    if (!parsed.success) {
+      throw new AppError(
+        400,
+        "Please tell us why you are deleting your account",
+        "VALIDATION_ERROR",
+      );
+    }
+    const data = await requestAccountDeletion(req.userId!, parsed.data.reason);
     res.json({ success: true, data });
   }),
 );

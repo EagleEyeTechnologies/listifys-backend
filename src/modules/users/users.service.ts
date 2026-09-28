@@ -423,7 +423,11 @@ export async function removeFollower(userId: string, followerId: string) {
 const DELETION_GRACE_MS = 7 * 24 * 60 * 60 * 1000;
 
 /** Schedule account deletion with a 7-day grace period (App Store requirement). */
-export async function requestAccountDeletion(userId: string) {
+export async function requestAccountDeletion(userId: string, reason: string) {
+  const trimmed = reason.trim();
+  if (trimmed.length < 3) {
+    throw new AppError(400, "Please tell us why you are deleting your account", "VALIDATION_ERROR");
+  }
   const user = await User.findById(userId);
   if (!user || !user.isActive) {
     throw new AppError(401, "User not found", "UNAUTHORIZED");
@@ -443,6 +447,7 @@ export async function requestAccountDeletion(userId: string) {
   const when = new Date(Date.now() + DELETION_GRACE_MS);
   user.scheduledDeletionAt = when;
   user.deletionRequestedAt = new Date();
+  user.deletionReason = trimmed.slice(0, 500);
   await user.save();
   return {
     scheduledDeletionAt: when.toISOString(),
@@ -462,6 +467,7 @@ export async function cancelAccountDeletion(userId: string) {
   }
   user.set("scheduledDeletionAt", null);
   user.set("deletionRequestedAt", null);
+  user.set("deletionReason", "");
   await user.save();
   return { ok: true };
 }
@@ -501,6 +507,7 @@ export async function purgeExpiredAccountDeletions(limit = 50) {
     user.set("passwordHash", undefined);
     user.set("providers", []);
     user.set("scheduledDeletionAt", null);
+    user.set("deletionReason", "");
     await user.save();
     purged += 1;
   }

@@ -9,6 +9,18 @@ import { indexListing, removeListingFromIndex } from "../search/search.service.j
 import { enqueueListingSideEffect } from "../../queues/listingQueue.js";
 import { isMongoObjectId, listingSlugFrom } from "../../utils/slug.js";
 import { absolutizeMediaUrl } from "../../utils/mediaUrl.js";
+import { kv } from "../../redis/client.js";
+
+const LISTINGS_CACHE_VER = "listings:catalog-ver";
+const LISTINGS_CACHE_TTL = 90;
+
+async function listingsCacheVersion() {
+  return (await kv.get(LISTINGS_CACHE_VER)) || "0";
+}
+
+async function invalidateListingsCache() {
+  await kv.set(LISTINGS_CACHE_VER, String(Date.now()), 60 * 60 * 24);
+}
 
 export const createListingSchema = z.object({
   title: z.string().min(3).max(200),
@@ -21,6 +33,7 @@ export const createListingSchema = z.object({
   currency: z.string().optional(),
   condition: z.string().optional(),
   images: z.array(z.string().min(1)).max(20).optional(),
+  video: z.string().max(2000).optional(),
   location: z.string().min(2),
   city: z.string().min(2),
   lat: z.number().min(-90).max(90).optional(),
@@ -43,7 +56,10 @@ export const listQuerySchema = z.object({
   lat: z.coerce.number().optional(),
   lng: z.coerce.number().optional(),
   radiusMiles: z.coerce.number().min(1).max(500).optional(),
-  sort: z.enum(["latest", "price-asc", "price-desc", "nearest"]).optional().default("latest"),
+  sort: z
+    .enum(["latest", "oldest", "price-asc", "price-desc", "nearest"])
+    .optional()
+    .default("latest"),
   page: z.coerce.number().min(1).default(1),
   limit: z.coerce.number().min(1).max(500).default(20),
   sellerId: z.string().optional(),
@@ -105,6 +121,7 @@ function toPublic(doc: InstanceType<typeof Listing>) {
     condition: obj.condition,
     images,
     image: images[0] || "",
+    video: typeof obj.video === "string" ? obj.video : "",
     location: obj.location,
     city: obj.city,
     lat: coords?.[1],
@@ -156,8 +173,13 @@ export async function createListing(
         : undefined,
   });
 
-  await indexListing(listing);
+  try {
+    await indexListing(listing);
+  } catch {
+    /* listing is saved; search index can catch up later */
+  }
   await enqueueListingSideEffect("created", listing._id.toString());
+  void invalidateListingsCache();
   return toPublic(listing);
 }
 
@@ -241,6 +263,7 @@ export async function updateListing(
     /* status already persisted; search index can lag */
   }
   await enqueueListingSideEffect("updated", listing._id.toString());
+  void invalidateListingsCache();
   return toPublic(listing);
 }
 
@@ -256,6 +279,7 @@ export async function softDeleteListing(id: string, sellerId: string) {
   await listing.save();
   await removeListingFromIndex(id);
   await enqueueListingSideEffect("removed", id);
+  void invalidateListingsCache();
   return { id };
 }
 
@@ -276,6 +300,23 @@ export async function listMyListings(sellerId: string) {
 }
 
 export async function browseListings(
+  countryCode: "US" | "CA" | "IN",
+  query: z.infer<typeof listQuerySchema>,
+) {
+  const version = await listingsCacheVersion();
+  const cacheKey = `listings:${version}:${countryCode}:${JSON.stringify(query)}`;
+  try {
+    const hit = await kv.get(cacheKey);
+    if (hit) return JSON.parse(hit) as Awaited<ReturnType<typeof browseListingsUncached>>;
+  } catch {
+    /* cache miss or corrupt payload */
+  }
+  const result = await browseListingsUncached(countryCode, query);
+  void kv.set(cacheKey, JSON.stringify(result), LISTINGS_CACHE_TTL).catch(() => undefined);
+  return result;
+}
+
+async function browseListingsUncached(
   countryCode: "US" | "CA" | "IN",
   query: z.infer<typeof listQuerySchema>,
 ) {
@@ -310,6 +351,7 @@ export async function browseListings(
   const skip = (page - 1) * limit;
 
   let sort: Record<string, 1 | -1> = { createdAt: -1 };
+  if (query.sort === "oldest") sort = { createdAt: 1 };
   if (query.sort === "price-asc") sort = { price: 1 };
   if (query.sort === "price-desc") sort = { price: -1 };
 
