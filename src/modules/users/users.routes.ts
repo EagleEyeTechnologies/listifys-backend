@@ -7,6 +7,7 @@ import { User } from "./user.model.js";
 import { browseListings, listMyListings, listQuerySchema } from "../listings/listing.service.js";
 import {
   listConnections,
+  listBlockedUsers,
   removeFollower,
   toMeUser,
   findUserByIdOrSlug,
@@ -161,6 +162,15 @@ usersRouter.get(
 );
 
 usersRouter.get(
+  "/me/blocked",
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const data = await listBlockedUsers(req.userId!);
+    res.json({ success: true, data });
+  }),
+);
+
+usersRouter.get(
   "/me/following",
   requireAuth,
   asyncHandler(async (req, res) => {
@@ -303,12 +313,15 @@ usersRouter.get(
       throw new AppError(404, "User not found", "NOT_FOUND");
     }
     // Allow listing browse even if the user document was not migrated.
+    const limit = typeof req.query.limit === "string" ? req.query.limit : 50;
+    const page = typeof req.query.page === "string" ? req.query.page : 1;
+    const sort = typeof req.query.sort === "string" ? req.query.sort : "latest";
     const query = listQuerySchema.parse({
       sellerId: id,
       status: "active",
-      limit: 50,
-      page: 1,
-      sort: "latest",
+      limit,
+      page,
+      sort,
     });
     const data = await browseListings(req.countryCode, query, req.userId);
     res.json({ success: true, data });

@@ -41,6 +41,17 @@ function toPublicListing(doc: InstanceType<typeof Listing>) {
   };
 }
 
+function savedTimes(raw: unknown): Record<string, string> {
+  if (!raw || typeof raw !== "object") return {};
+  const out: Record<string, string> = {};
+  for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
+    if (!value) continue;
+    const date = new Date(String(value));
+    if (!Number.isNaN(date.getTime())) out[key] = date.toISOString();
+  }
+  return out;
+}
+
 async function getUserOrThrow(userId: string) {
   const user = await User.findById(userId);
   if (!user || !user.isActive) {
@@ -61,21 +72,24 @@ export async function listSaved(userId: string) {
         })
       : [];
   const byId = new Map(rows.map((r) => [r._id.toString(), r]));
+  const savedAt = savedTimes(user.get("savedListingAt"));
   const items = ids
     .map((id) => byId.get(id))
     .filter(Boolean)
     .map((doc) => toPublicListing(doc!));
 
-  return { ids: [...ids], items };
+  return { ids: [...ids], savedAt, items };
 }
 
 export async function toggleSaved(userId: string, listingId: string) {
   const user = await getUserOrThrow(userId);
   const ids = [...(user.savedListingIds || [])];
+  const times = savedTimes(user.get("savedListingAt"));
   const idx = ids.indexOf(listingId);
   let saved: boolean;
   if (idx >= 0) {
     ids.splice(idx, 1);
+    delete times[listingId];
     saved = false;
   } else {
     // Prefer validating ObjectId listings; still allow string ids for client mocks during hybrid
@@ -86,16 +100,21 @@ export async function toggleSaved(userId: string, listingId: string) {
       }
     }
     ids.unshift(listingId);
+    times[listingId] = new Date().toISOString();
     saved = true;
   }
   user.savedListingIds = ids;
+  user.set("savedListingAt", times);
+  user.markModified("savedListingAt");
   await user.save();
-  return { saved, ids };
+  return { saved, ids, savedAt: times };
 }
 
 export async function clearSaved(userId: string) {
   const user = await getUserOrThrow(userId);
   user.savedListingIds = [];
+  user.set("savedListingAt", {});
+  user.markModified("savedListingAt");
   await user.save();
-  return { ids: [] as string[] };
+  return { ids: [] as string[], savedAt: {} as Record<string, string> };
 }

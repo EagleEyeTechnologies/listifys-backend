@@ -14,6 +14,18 @@ import {
   displayEmail,
   isApplePrivateRelayEmail,
 } from "../../utils/phone.js";
+import { socialLinkError, type SocialField } from "../../utils/socialLinks.js";
+
+function socialUrlField(field: SocialField, max: number) {
+  return z
+    .string()
+    .max(max)
+    .optional()
+    .superRefine((value, ctx) => {
+      const message = socialLinkError(field, value || "");
+      if (message) ctx.addIssue({ code: "custom", message });
+    });
+}
 
 export const updateMeSchema = z
   .object({
@@ -24,10 +36,10 @@ export const updateMeSchema = z
     location: z.string().max(200).optional(),
     gender: z.string().max(40).optional(),
     dateOfBirth: z.string().max(20).optional(),
-    website: z.string().max(300).optional(),
-    instagram: z.string().max(120).optional(),
-    linkedin: z.string().max(120).optional(),
-    twitter: z.string().max(120).optional(),
+    website: socialUrlField("website", 300),
+    instagram: socialUrlField("instagram", 300),
+    linkedin: socialUrlField("linkedin", 300),
+    twitter: socialUrlField("twitter", 300),
     countryCode: z.enum(["US", "CA", "IN"]).optional(),
   })
   .strict();
@@ -371,6 +383,15 @@ export async function listConnections(
   const people = await User.find({ _id: { $in: ids }, isActive: true });
   const viewer = viewerId ? await User.findById(viewerId) : user;
   const viewerFollowing = idsOf(viewer?.following);
+  return Promise.all(people.map((p) => personFromUser(p, viewerFollowing)));
+}
+
+export async function listBlockedUsers(userId: string) {
+  const user = await requireUser(userId);
+  const ids = idsOf(user.blockedUsers);
+  if (!ids.length) return [];
+  const people = await User.find({ _id: { $in: ids }, isActive: true });
+  const viewerFollowing = idsOf(user.following);
   return Promise.all(people.map((p) => personFromUser(p, viewerFollowing)));
 }
 

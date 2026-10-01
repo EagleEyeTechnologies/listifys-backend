@@ -277,6 +277,7 @@ export async function createPendingTicketCheckout(input: {
     });
   }
 
+  await abandonPendingTicketCheckouts(input.userId, listing._id.toString());
   const sellerId = await assertCanBook(listing, input.userId, qty);
   const user = await User.findById(input.userId).select("name phone");
   const currency = (listing.currency || "USD").toUpperCase();
@@ -393,6 +394,47 @@ export async function markEventTicketRefunded(paymentId: string) {
       $inc: { "extras.event.ticketsAvailable": booking.ticketQuantity },
     });
   }
+}
+
+/** Drop unpaid checkouts so closing Razorpay does not leave Pending Payment rows. */
+export async function abandonPendingTicketCheckouts(userId: string, listingId?: string) {
+  const filter: Record<string, unknown> = { userId, status: "pending_payment" };
+  if (listingId && mongoose.isValidObjectId(listingId)) filter.listingId = listingId;
+  const rows = await EventBooking.find(filter).select("_id paymentId");
+  if (!rows.length) return;
+  const ids = rows.map((row) => row._id);
+  const paymentIds = rows.map((row) => row.paymentId).filter(Boolean);
+  await EventBooking.updateMany(
+    { _id: { $in: ids }, status: "pending_payment" },
+    { status: "cancelled", cancelledAt: new Date() },
+  );
+  if (paymentIds.length) {
+    await Payment.updateMany(
+      { _id: { $in: paymentIds }, status: { $in: ["created", "pending"] } },
+      { status: "cancelled" },
+    );
+  }
+}
+
+export async function cancelPendingTicketBooking(userId: string, bookingId: string) {
+  if (!mongoose.isValidObjectId(bookingId)) {
+    throw new AppError(400, "Invalid booking id", "VALIDATION_ERROR");
+  }
+  const booking = await EventBooking.findById(bookingId);
+  if (!booking || booking.userId.toString() !== userId) {
+    throw new AppError(404, "Booking not found", "NOT_FOUND");
+  }
+  if (booking.status !== "pending_payment") return enrichBooking(booking);
+  booking.status = "cancelled";
+  booking.cancelledAt = new Date();
+  await booking.save();
+  if (booking.paymentId) {
+    await Payment.updateOne(
+      { _id: booking.paymentId, status: { $in: ["created", "pending"] } },
+      { status: "cancelled" },
+    );
+  }
+  return enrichBooking(booking);
 }
 
 export async function getMyBookings(userId: string) {

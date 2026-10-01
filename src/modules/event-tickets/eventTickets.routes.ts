@@ -8,6 +8,7 @@ import { Listing } from "../listings/listing.model.js";
 import {
   confirmFreeBooking,
   createPendingTicketCheckout,
+  cancelPendingTicketBooking,
   getBookingForUser,
   getMyBookings,
   getOrganizerBookings,
@@ -47,6 +48,18 @@ eventTicketsRouter.get(
   requireAuth,
   asyncHandler(async (req, res) => {
     const booking = await getBookingForUser(String(req.params.bookingId), String(req.userId));
+    res.json({ success: true, data: booking });
+  }),
+);
+
+eventTicketsRouter.post(
+  "/my-bookings/:bookingId/cancel",
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const booking = await cancelPendingTicketBooking(
+      String(req.userId),
+      String(req.params.bookingId),
+    );
     res.json({ success: true, data: booking });
   }),
 );
