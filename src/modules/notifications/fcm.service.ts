@@ -21,11 +21,9 @@ function stringifyData(obj: Record<string, unknown> = {}) {
 }
 
 function resolveServiceAccount(): Record<string, unknown> | null {
-  const saPathRaw =
-    env.FIREBASE_SERVICE_ACCOUNT_PATH ||
-    (env.FIREBASE_SERVICE_ACCOUNT_JSON && !env.FIREBASE_SERVICE_ACCOUNT_JSON.trim().startsWith("{")
-      ? env.FIREBASE_SERVICE_ACCOUNT_JSON
-      : null);
+  const jsonValue = env.FIREBASE_SERVICE_ACCOUNT_JSON?.trim() || "";
+  const pathValue = env.FIREBASE_SERVICE_ACCOUNT_PATH?.trim() || "";
+  const saPathRaw = pathValue || (jsonValue && !jsonValue.startsWith("{") ? jsonValue : null);
 
   if (saPathRaw) {
     const candidates = [
@@ -109,14 +107,15 @@ export async function sendFcmToTokens(
     body: string;
     data?: Record<string, unknown>;
   },
-): Promise<{ success: number; failure: number }> {
+): Promise<{ success: number; failure: number; invalidTokens: string[] }> {
   const firebaseApp = ensureApp();
   const unique = [...new Set(tokens.filter(Boolean))];
-  if (!firebaseApp || !unique.length) return { success: 0, failure: 0 };
+  if (!firebaseApp || !unique.length) return { success: 0, failure: 0, invalidTokens: [] };
 
   const messaging = getMessaging(firebaseApp);
   let success = 0;
   let failure = 0;
+  const invalidTokens: string[] = [];
   const data = stringifyData(payload.data || {});
 
   for (const token of unique) {
@@ -129,14 +128,16 @@ export async function sendFcmToTokens(
       success += 1;
     } catch (err) {
       failure += 1;
-      logger.debug("[FCM] Token send failed", {
-        error: err instanceof Error ? err.message : String(err),
-      });
+      const message = err instanceof Error ? err.message : String(err);
+      if (/registration token|not registered|invalid.*token/i.test(message)) {
+        invalidTokens.push(token);
+      }
+      logger.debug("[FCM] Token send failed", { error: message });
     }
   }
 
-  logger.info("[FCM] Push sent", { success, failure });
-  return { success, failure };
+  logger.info("[FCM] Push sent", { success, failure, invalid: invalidTokens.length });
+  return { success, failure, invalidTokens };
 }
 
 export function initFcm(): void {

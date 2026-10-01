@@ -30,7 +30,7 @@ const listingSchema = new Schema(
       default: "sale",
       index: true,
     },
-    price: { type: Number, required: true, min: 0 },
+    price: { type: Number, required: true, min: 0, max: 999_999_999_999 },
     currency: { type: String, default: "INR" },
     countryCode: {
       type: String,

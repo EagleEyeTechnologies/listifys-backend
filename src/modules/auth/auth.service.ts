@@ -20,7 +20,11 @@ import {
   normalizePhoneParts,
 } from "../../utils/phone.js";
 import type { CountryCode } from "../../types/domain.js";
-import { verifyAppleIdentityToken, verifyGoogleIdToken } from "./social.oauth.js";
+import {
+  verifyAppleIdentityToken,
+  verifyGoogleAccessToken,
+  verifyGoogleIdToken,
+} from "./social.oauth.js";
 
 export const emailRequestSchema = z.object({
   email: z.string().email(),
@@ -71,14 +75,19 @@ export const refreshSchema = z.object({
   refreshToken: z.string().min(10),
 });
 
-export const socialSchema = z.object({
-  idToken: z.string().min(10),
-  name: z.string().optional(),
-  email: z.string().email().optional(),
-  givenName: z.string().optional(),
-  familyName: z.string().optional(),
-  countryCode: z.enum(["US", "CA", "IN"]).optional(),
-});
+export const socialSchema = z
+  .object({
+    idToken: z.string().min(10).optional(),
+    accessToken: z.string().min(10).optional(),
+    name: z.string().optional(),
+    email: z.string().email().optional(),
+    givenName: z.string().optional(),
+    familyName: z.string().optional(),
+    countryCode: z.enum(["US", "CA", "IN"]).optional(),
+  })
+  .refine((value) => Boolean(value.idToken || value.accessToken), {
+    message: "A Google or Apple token is required",
+  });
 
 function publicUser(user: {
   _id: { toString(): string };
@@ -161,7 +170,7 @@ export async function requestRegisterEmailOtp(emailRaw: string) {
   if (existing?.passwordHash) {
     throw new AppError(409, "Email already registered. Please sign in.", "EMAIL_EXISTS");
   }
-  return issueOtp("email", email);
+  return issueOtp("email", email, "register");
 }
 
 /** Email login with password. */
@@ -194,7 +203,7 @@ export async function requestPasswordResetOtp(email: string) {
     // Do not leak whether the email exists
     return { expiresIn: 300 };
   }
-  return issueOtp("email", normalized);
+  return issueOtp("email", normalized, "password_reset");
 }
 
 /** Verify OTP and set a new password. */
@@ -217,7 +226,7 @@ export async function resetPasswordWithOtp(input: z.infer<typeof emailResetPassw
 /** @deprecated Prefer email+password. Kept for transitional clients. */
 export async function requestEmailOtp(email: string) {
   const normalized = email.trim().toLowerCase();
-  return issueOtp("email", normalized);
+  return issueOtp("email", normalized, "login");
 }
 
 /** @deprecated Prefer email+password. Kept for transitional clients. */
@@ -385,7 +394,9 @@ export async function socialLogin(
   input: z.infer<typeof socialSchema>,
 ) {
   if (provider === "google") {
-    const identity = await verifyGoogleIdToken(input.idToken);
+    const identity = input.idToken
+      ? await verifyGoogleIdToken(input.idToken)
+      : await verifyGoogleAccessToken(input.accessToken || "");
     const email = identity.email;
 
     let user = await User.findOne({
@@ -428,6 +439,9 @@ export async function socialLogin(
     return { user: publicUser(user), ...tokens };
   }
 
+  if (!input.idToken) {
+    throw new AppError(400, "Apple identity token is required", "VALIDATION_ERROR");
+  }
   const identity = await verifyAppleIdentityToken(input.idToken);
   const displayName =
     [input.givenName, input.familyName].filter(Boolean).join(" ").trim() ||

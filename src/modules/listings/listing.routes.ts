@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { asyncHandler } from "../../utils/asyncHandler.js";
-import { requireAuth } from "../../middleware/auth.js";
+import { optionalAuth, requireAuth } from "../../middleware/auth.js";
 import { AppError } from "../../utils/AppError.js";
 import {
   browseListings,
@@ -27,20 +27,25 @@ listingsRouter.get(
 
 listingsRouter.get(
   "/",
+  optionalAuth,
   asyncHandler(async (req, res) => {
     const parsed = listQuerySchema.safeParse(req.query);
     if (!parsed.success) {
       throw new AppError(400, "Invalid query", "VALIDATION_ERROR", parsed.error.flatten());
     }
-    const data = await browseListings(req.countryCode, parsed.data);
+    const data = await browseListings(req.countryCode, parsed.data, req.userId);
     res.json({ success: true, data });
   }),
 );
 
 listingsRouter.get(
   "/:id",
+  optionalAuth,
   asyncHandler(async (req, res) => {
-    const data = await getListingById(String(req.params.id));
+    const anonViewerId = String(req.headers["x-viewer-id"] || "")
+      .replace(/[^\w-]/g, "")
+      .slice(0, 80);
+    const data = await getListingById(String(req.params.id), req.userId, anonViewerId);
     res.json({ success: true, data });
   }),
 );

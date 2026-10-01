@@ -78,6 +78,12 @@ export async function createNotification(input: {
         title: input.title,
         body: input.body,
         data: { type: input.type, href: input.href || "" },
+      }).then(async (result) => {
+        if (!result.invalidTokens.length) return;
+        await User.updateOne(
+          { _id: input.userId },
+          { $pull: { devices: { pushToken: { $in: result.invalidTokens } } } },
+        );
       });
     }
   } catch {

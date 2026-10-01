@@ -27,6 +27,11 @@ const userSchema = new Schema(
       type: [{ type: Schema.Types.ObjectId, ref: "User" }],
       default: [],
     },
+    /** Users this account has blocked. Listings and chat are hidden both ways. */
+    blockedUsers: {
+      type: [{ type: Schema.Types.ObjectId, ref: "User" }],
+      default: [],
+    },
     passwordHash: { type: String, select: false },
     providers: {
       type: [

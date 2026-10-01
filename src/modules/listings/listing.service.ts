@@ -1,6 +1,7 @@
 import { z } from "zod";
 import mongoose from "mongoose";
 import { Listing } from "./listing.model.js";
+import { ListingView } from "./listingView.model.js";
 import { User } from "../users/user.model.js";
 import { CATEGORY_SLUGS } from "../../types/domain.js";
 import { AppError } from "../../utils/AppError.js";
@@ -9,6 +10,7 @@ import { indexListing, removeListingFromIndex } from "../search/search.service.j
 import { enqueueListingSideEffect } from "../../queues/listingQueue.js";
 import { isMongoObjectId, listingSlugFrom } from "../../utils/slug.js";
 import { absolutizeMediaUrl } from "../../utils/mediaUrl.js";
+import { hiddenSellerIds, isEitherBlocked } from "../users/users.service.js";
 import { kv } from "../../redis/client.js";
 
 const LISTINGS_CACHE_VER = "listings:catalog-ver";
@@ -29,7 +31,7 @@ export const createListingSchema = z.object({
   subcategory: z.string().optional(),
   subSubcategory: z.string().optional(),
   intent: z.enum(["sale", "wanted", "free"]).optional(),
-  price: z.number().min(0),
+  price: z.number().finite().min(0).max(999_999_999_999),
   currency: z.string().optional(),
   condition: z.string().optional(),
   images: z.array(z.string().min(1)).max(20).optional(),
@@ -41,6 +43,34 @@ export const createListingSchema = z.object({
   featured: z.boolean().optional(),
   extras: z.record(z.unknown()).optional(),
 });
+
+function eventStartIsUpcoming(raw: string) {
+  const start = new Date(raw);
+  if (Number.isNaN(start.getTime())) return false;
+  const now = new Date();
+  now.setSeconds(0, 0);
+  start.setSeconds(0, 0);
+  return start.getTime() >= now.getTime();
+}
+
+function assertEventFields(input: { category?: string; extras?: Record<string, unknown> }) {
+  if (input.category !== "events") return;
+  if (!input.extras) {
+    throw new AppError(400, "Event start time, venue, and duration are required", "VALIDATION");
+  }
+  const event =
+    input.extras.event && typeof input.extras.event === "object"
+      ? (input.extras.event as Record<string, unknown>)
+      : {};
+  const startsAt = String(event.startsAt || "").trim();
+  const venue = String(event.venue || "").trim();
+  const duration = String(event.duration || "").trim();
+  if (!startsAt || !eventStartIsUpcoming(startsAt)) {
+    throw new AppError(400, "Choose an event start time in the future", "VALIDATION");
+  }
+  if (!venue) throw new AppError(400, "Event venue is required", "VALIDATION");
+  if (!duration) throw new AppError(400, "Event duration is required", "VALIDATION");
+}
 
 export const updateListingSchema = createListingSchema.partial().extend({
   status: z.enum(["active", "sold", "paused", "expired"]).optional(),
@@ -151,6 +181,7 @@ export async function createListing(
 ) {
   const seller = await User.findById(sellerId);
   if (!seller) throw new AppError(401, "Seller not found", "UNAUTHORIZED");
+  assertEventFields(input);
 
   const id = new mongoose.Types.ObjectId();
   const slug = listingSlugFrom(input.title, id.toString());
@@ -183,7 +214,29 @@ export async function createListing(
   return toPublic(listing);
 }
 
-export async function getListingById(idOrSlug: string) {
+async function recordUniqueView(
+  listingId: mongoose.Types.ObjectId,
+  sellerId: string,
+  viewerId?: string,
+  anonViewerId?: string,
+) {
+  if (viewerId && viewerId === sellerId) return false;
+  const raw = (viewerId ? `user:${viewerId}` : anonViewerId ? `anon:${anonViewerId}` : "").slice(
+    0,
+    120,
+  );
+  if (!raw) return false;
+  try {
+    await ListingView.create({ listing: listingId, viewerKey: raw });
+    return true;
+  } catch (err) {
+    const code = (err as { code?: number }).code;
+    if (code === 11000) return false;
+    return false;
+  }
+}
+
+export async function getListingById(idOrSlug: string, viewerId?: string, anonViewerId?: string) {
   const key = String(idOrSlug || "").trim();
   if (!key) throw new AppError(404, "Listing not found", "NOT_FOUND");
 
@@ -209,22 +262,32 @@ export async function getListingById(idOrSlug: string) {
   if (!listing || listing.status === "removed") {
     throw new AppError(404, "Listing not found", "NOT_FOUND");
   }
-  listing.views = (listing.views || 0) + 1;
-  if (!listing.slug) listing.slug = listingSlugFrom(listing.title, listing._id.toString());
+  if (viewerId && (await isEitherBlocked(viewerId, listing.seller.toString()))) {
+    throw new AppError(404, "Listing not found", "NOT_FOUND");
+  }
+
+  const patch: Record<string, unknown> = {};
+  if (!listing.slug) patch.slug = listingSlugFrom(listing.title, listing._id.toString());
 
   // Prefer live seller avatar/name (denormalized fields can be stale/empty)
   const seller = await User.findById(listing.seller).select("avatar name").lean();
-  if (seller) {
-    if (seller.avatar) {
-      listing.sellerAvatar = seller.avatar;
-    }
-    if (seller.name) {
-      listing.sellerName = seller.name;
-    }
-  }
+  if (seller?.avatar && seller.avatar !== listing.sellerAvatar) patch.sellerAvatar = seller.avatar;
+  if (seller?.name && seller.name !== listing.sellerName) patch.sellerName = seller.name;
 
-  await listing.save();
-  return toPublic(listing);
+  const firstView = await recordUniqueView(
+    listing._id,
+    listing.seller.toString(),
+    viewerId,
+    anonViewerId,
+  );
+  const update: Record<string, unknown> = {};
+  if (firstView) update.$inc = { views: 1 };
+  if (Object.keys(patch).length) update.$set = patch;
+  const updated = Object.keys(update).length
+    ? await Listing.findByIdAndUpdate(listing._id, update, { new: true })
+    : listing;
+  if (!updated) throw new AppError(404, "Listing not found", "NOT_FOUND");
+  return toPublic(updated);
 }
 
 export async function updateListing(
@@ -239,32 +302,58 @@ export async function updateListing(
   if (listing.seller.toString() !== sellerId) {
     throw new AppError(403, "Not listing owner", "FORBIDDEN");
   }
-
-  Object.assign(listing, {
-    ...input,
-    extras: input.extras !== undefined ? input.extras : listing.extras,
-  });
-  if (input.status !== undefined) {
-    listing.status = input.status;
-    listing.markModified("status");
+  if (input.extras) {
+    assertEventFields({
+      category: input.category || listing.category,
+      extras: input.extras,
+    });
   }
 
+  const $set: Record<string, unknown> = {};
+  const fields = [
+    "title",
+    "description",
+    "category",
+    "subcategory",
+    "subSubcategory",
+    "intent",
+    "price",
+    "currency",
+    "condition",
+    "images",
+    "video",
+    "location",
+    "city",
+    "featured",
+    "extras",
+    "status",
+  ] as const;
+  for (const key of fields) {
+    if (input[key] !== undefined) $set[key] = input[key];
+  }
   if (input.lat !== undefined && input.lng !== undefined) {
-    listing.coordinates = {
+    $set.coordinates = {
       type: "Point",
       coordinates: [input.lng, input.lat],
     };
   }
 
-  await listing.save();
+  const updated = await Listing.findOneAndUpdate(
+    { _id: listing._id, seller: sellerId, status: { $ne: "removed" } },
+    { $set },
+    { new: true },
+  );
+  if (!updated) {
+    throw new AppError(404, "Listing not found", "NOT_FOUND");
+  }
   try {
-    await indexListing(listing);
+    await indexListing(updated);
   } catch {
     /* status already persisted; search index can lag */
   }
-  await enqueueListingSideEffect("updated", listing._id.toString());
+  await enqueueListingSideEffect("updated", updated._id.toString());
   void invalidateListingsCache();
-  return toPublic(listing);
+  return toPublic(updated);
 }
 
 export async function softDeleteListing(id: string, sellerId: string) {
@@ -302,16 +391,17 @@ export async function listMyListings(sellerId: string) {
 export async function browseListings(
   countryCode: "US" | "CA" | "IN",
   query: z.infer<typeof listQuerySchema>,
+  viewerId?: string,
 ) {
   const version = await listingsCacheVersion();
-  const cacheKey = `listings:${version}:${countryCode}:${JSON.stringify(query)}`;
+  const cacheKey = `listings:${version}:${countryCode}:${viewerId || "anon"}:${JSON.stringify(query)}`;
   try {
     const hit = await kv.get(cacheKey);
     if (hit) return JSON.parse(hit) as Awaited<ReturnType<typeof browseListingsUncached>>;
   } catch {
     /* cache miss or corrupt payload */
   }
-  const result = await browseListingsUncached(countryCode, query);
+  const result = await browseListingsUncached(countryCode, query, viewerId);
   void kv.set(cacheKey, JSON.stringify(result), LISTINGS_CACHE_TTL).catch(() => undefined);
   return result;
 }
@@ -319,6 +409,7 @@ export async function browseListings(
 async function browseListingsUncached(
   countryCode: "US" | "CA" | "IN",
   query: z.infer<typeof listQuerySchema>,
+  viewerId?: string,
 ) {
   const filter: Record<string, unknown> = {
     status: query.status || "active",
@@ -329,10 +420,33 @@ async function browseListingsUncached(
   } else {
     filter.countryCode = countryCode;
   }
+  const hiddenSellers = await hiddenSellerIds(viewerId);
+  if (hiddenSellers.length) {
+    const requested =
+      typeof filter.seller === "string"
+        ? filter.seller
+        : filter.seller && typeof filter.seller === "object" && "toString" in filter.seller
+          ? String(filter.seller)
+          : "";
+    if (requested && hiddenSellers.some((id) => id.toString() === requested)) {
+      return {
+        items: [],
+        page: query.page,
+        limit: query.limit,
+        total: 0,
+        totalPages: 0,
+      };
+    }
+    if (!requested) filter.seller = { $nin: hiddenSellers };
+  }
   if (query.category) filter.category = query.category;
   if (query.intent) filter.intent = query.intent;
   if (query.city) filter.city = new RegExp(`^${query.city}$`, "i");
-  if (query.q) filter.$text = { $search: query.q };
+  if (query.q) {
+    const q = query.q.trim();
+    if (isMongoObjectId(q)) filter._id = q;
+    else filter.$text = { $search: q };
+  }
 
   // type alias used by UI: rentals => property deal types in extras
   if (query.type === "rentals") {
