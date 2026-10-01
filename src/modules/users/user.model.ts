@@ -63,6 +63,8 @@ const userSchema = new Schema(
       default: [],
     },
     savedListingIds: { type: [String], default: [] },
+    /** ISO timestamps keyed by listing id. Older saves may be missing. */
+    savedListingAt: { type: Schema.Types.Mixed, default: () => ({}) },
     compareListingIds: { type: [String], default: [] },
     isActive: { type: Boolean, default: true },
     /** When set, account will be permanently deleted after this timestamp (7-day grace). */
