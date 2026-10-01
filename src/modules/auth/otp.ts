@@ -3,6 +3,7 @@ import { env } from "../../config/env.js";
 import { kv } from "../../redis/client.js";
 import { logger } from "../../utils/logger.js";
 import { AppError } from "../../utils/AppError.js";
+import { renderOtpEmail, type OtpEmailPurpose } from "../mail/brandedEmail.js";
 
 export type OtpDelivery = "logged" | "sms" | "email" | "unavailable";
 
@@ -153,7 +154,12 @@ async function sendTwilioSms(to: string, body: string): Promise<void> {
   }
 }
 
-async function sendResendEmail(to: string, code: string): Promise<void> {
+async function sendResendEmail(to: string, code: string, purpose?: OtpEmailPurpose): Promise<void> {
+  const message = renderOtpEmail({
+    code,
+    purpose,
+    expiresMinutes: Math.max(1, Math.round(env.OTP_TTL_SECONDS / 60)),
+  });
   let res: Response;
   try {
     res = await fetch("https://api.resend.com/emails", {
@@ -165,8 +171,9 @@ async function sendResendEmail(to: string, code: string): Promise<void> {
       body: JSON.stringify({
         from: env.EMAIL_FROM,
         to: [to],
-        subject: "Your Listifys verification code",
-        text: `Your Listifys verification code is ${code}. It expires in ${Math.round(env.OTP_TTL_SECONDS / 60)} minutes.`,
+        subject: message.subject,
+        text: message.text,
+        html: message.html,
       }),
     });
   } catch (err) {
@@ -198,6 +205,7 @@ async function sendResendEmail(to: string, code: string): Promise<void> {
 export async function issueOtp(
   channel: "email" | "phone",
   target: string,
+  purpose?: OtpEmailPurpose,
 ): Promise<{ expiresIn: number; delivery: OtpDelivery }> {
   let delivery: OtpDelivery;
 
@@ -257,7 +265,7 @@ export async function issueOtp(
   await kv.set(otpKey(channel, target), code, env.OTP_TTL_SECONDS);
 
   if (resendEmailConfigured()) {
-    await sendResendEmail(target, code);
+    await sendResendEmail(target, code, purpose);
     delivery = "email";
     logger.info("OTP issued", {
       channel,

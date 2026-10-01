@@ -10,10 +10,12 @@ import { createNotification } from "../notifications/notification.service.js";
 import { env, getAdminEmails } from "../../config/env.js";
 import { logger } from "../../utils/logger.js";
 import { getIo } from "../chat/socket.js";
+import { renderNoticeEmail } from "../mail/brandedEmail.js";
 
 async function sendReportEmail(to: string[], subject: string, text: string) {
   const recipients = [...new Set(to.map((email) => email.trim()).filter(Boolean))];
   if (!recipients.length || !env.RESEND_API_KEY || !env.EMAIL_FROM) return;
+  const title = subject.replace(/^\[Listifys\]\s*/, "");
   const res = await fetch("https://api.resend.com/emails", {
     method: "POST",
     headers: {
@@ -25,12 +27,15 @@ async function sendReportEmail(to: string[], subject: string, text: string) {
       to: recipients,
       subject,
       text,
+      html: renderNoticeEmail({ title, text }),
     }),
   });
   if (!res.ok) {
     const detail = await res.text().catch(() => "");
     logger.warn("Report email failed", { status: res.status, detail: detail.slice(0, 200) });
+    return;
   }
+  logger.info("Report email accepted", { subject, recipients: recipients.length });
 }
 
 async function notifyReportSubmitted(input: {

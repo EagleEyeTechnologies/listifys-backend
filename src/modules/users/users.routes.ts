@@ -12,6 +12,8 @@ import {
   findUserByIdOrSlug,
   getPublicSellerProfile,
   toggleFollow,
+  blockUser,
+  unblockUser,
   updateMe,
   updateMeSchema,
   changeEmailRequestSchema,
@@ -177,6 +179,24 @@ usersRouter.delete(
 );
 
 usersRouter.post(
+  "/:id/block",
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const data = await blockUser(req.userId!, String(req.params.id));
+    res.json({ success: true, data });
+  }),
+);
+
+usersRouter.delete(
+  "/:id/block",
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const data = await unblockUser(req.userId!, String(req.params.id));
+    res.json({ success: true, data });
+  }),
+);
+
+usersRouter.post(
   "/:id/follow",
   requireAuth,
   asyncHandler(async (req, res) => {
@@ -275,6 +295,7 @@ usersRouter.post(
 
 usersRouter.get(
   "/:id/listings",
+  optionalAuth,
   asyncHandler(async (req, res) => {
     const resolved = await findUserByIdOrSlug(String(req.params.id));
     const id = resolved?._id?.toString() || String(req.params.id);
@@ -289,7 +310,7 @@ usersRouter.get(
       page: 1,
       sort: "latest",
     });
-    const data = await browseListings(req.countryCode, query);
+    const data = await browseListings(req.countryCode, query, req.userId);
     res.json({ success: true, data });
   }),
 );

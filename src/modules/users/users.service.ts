@@ -1,3 +1,4 @@
+import mongoose from "mongoose";
 import { z } from "zod";
 import { User } from "./user.model.js";
 import { Listing } from "../listings/listing.model.js";
@@ -254,7 +255,7 @@ export async function requestEmailChange(userId: string, emailRaw: string) {
   if (taken) {
     throw new AppError(409, "Email already in use", "EMAIL_EXISTS");
   }
-  return issueOtp("email", email);
+  return issueOtp("email", email, "email_change");
 }
 
 export async function verifyEmailChange(userId: string, emailRaw: string, code: string) {
@@ -512,4 +513,49 @@ export async function purgeExpiredAccountDeletions(limit = 50) {
     purged += 1;
   }
   return { purged };
+}
+
+export async function isEitherBlocked(userId: string, otherId: string) {
+  if (!userId || !otherId || userId === otherId) return false;
+  if (!isMongoObjectId(userId) || !isMongoObjectId(otherId)) return false;
+  const [a, b] = await Promise.all([
+    User.findById(userId).select("blockedUsers").lean(),
+    User.findById(otherId).select("blockedUsers").lean(),
+  ]);
+  const aBlocked = (a?.blockedUsers || []).some((id) => String(id) === otherId);
+  const bBlocked = (b?.blockedUsers || []).some((id) => String(id) === userId);
+  return aBlocked || bBlocked;
+}
+
+/** Sellers the viewer should not see: people they blocked, and people who blocked them. */
+export async function hiddenSellerIds(viewerId?: string) {
+  if (!viewerId || !isMongoObjectId(viewerId)) return [] as mongoose.Types.ObjectId[];
+  const me = await User.findById(viewerId).select("blockedUsers").lean();
+  const mine = (me?.blockedUsers || []).map((id) => String(id));
+  const others = await User.find({ blockedUsers: viewerId }).select("_id").lean();
+  const ids = new Set<string>([...mine, ...others.map((row) => String(row._id))]);
+  return [...ids].filter((id) => isMongoObjectId(id)).map((id) => new mongoose.Types.ObjectId(id));
+}
+
+export async function blockUser(userId: string, targetIdOrSlug: string) {
+  const target = await findUserByIdOrSlug(targetIdOrSlug);
+  if (!target || !target.isActive) throw new AppError(404, "User not found", "NOT_FOUND");
+  const targetId = target._id.toString();
+  if (targetId === userId) throw new AppError(400, "You can't block yourself", "VALIDATION_ERROR");
+  await User.updateOne(
+    { _id: userId },
+    {
+      $addToSet: { blockedUsers: target._id },
+      $pull: { following: target._id, followers: target._id },
+    },
+  );
+  await User.updateOne({ _id: target._id }, { $pull: { following: userId, followers: userId } });
+  return { blocked: true, userId: targetId };
+}
+
+export async function unblockUser(userId: string, targetIdOrSlug: string) {
+  const target = await findUserByIdOrSlug(targetIdOrSlug);
+  if (!target) throw new AppError(404, "User not found", "NOT_FOUND");
+  await User.updateOne({ _id: userId }, { $pull: { blockedUsers: target._id } });
+  return { blocked: false, userId: target._id.toString() };
 }

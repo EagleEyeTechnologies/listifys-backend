@@ -86,6 +86,80 @@ export async function verifyGoogleIdToken(idToken: string): Promise<GoogleIdenti
   }
 }
 
+export async function verifyGoogleAccessToken(accessToken: string): Promise<GoogleIdentity> {
+  const audiences = googleAudiences();
+  if (!audiences.length) {
+    throw new AppError(503, "Google sign-in is not configured", "SOCIAL_AUTH_UNAVAILABLE");
+  }
+  if (!accessToken || accessToken.length < 20) {
+    throw new AppError(401, "Invalid Google access token", "UNAUTHORIZED");
+  }
+
+  let info: {
+    aud?: string;
+    azp?: string;
+    sub?: string;
+    email?: string;
+    email_verified?: string | boolean;
+    error?: string;
+  };
+  try {
+    const res = await fetch(
+      `https://oauth2.googleapis.com/tokeninfo?access_token=${encodeURIComponent(accessToken)}`,
+    );
+    info = (await res.json()) as typeof info;
+    if (!res.ok || info.error) {
+      throw new AppError(401, "Google sign-in expired. Please try again.", "UNAUTHORIZED");
+    }
+  } catch (err) {
+    if (err instanceof AppError) throw err;
+    throw new AppError(401, "Google authentication failed", "UNAUTHORIZED");
+  }
+
+  const allowed = new Set(audiences);
+  const audienceOk = [info.aud, info.azp].some((value) => value && allowed.has(value));
+  if (!audienceOk || !info.sub) {
+    throw new AppError(401, "Google token was not issued for Listifys", "UNAUTHORIZED");
+  }
+
+  let name: string | undefined;
+  let picture: string | undefined;
+  let email = info.email ? String(info.email).toLowerCase() : "";
+  let emailVerified = info.email_verified === true || info.email_verified === "true";
+  try {
+    const userRes = await fetch("https://www.googleapis.com/oauth2/v3/userinfo", {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+    if (userRes.ok) {
+      const profile = (await userRes.json()) as {
+        email?: string;
+        email_verified?: boolean;
+        name?: string;
+        picture?: string;
+        sub?: string;
+      };
+      if (profile.email) email = profile.email.toLowerCase();
+      if (profile.email_verified) emailVerified = true;
+      name = profile.name;
+      picture = profile.picture;
+    }
+  } catch {
+    /* tokeninfo email is enough to sign in */
+  }
+
+  if (!email) {
+    throw new AppError(401, "Google account has no email address", "UNAUTHORIZED");
+  }
+
+  return {
+    googleId: info.sub,
+    email,
+    emailVerified,
+    name,
+    picture,
+  };
+}
+
 export async function verifyAppleIdentityToken(identityToken: string): Promise<AppleIdentity> {
   const audiences = appleAudiences();
   if (!audiences.length) {

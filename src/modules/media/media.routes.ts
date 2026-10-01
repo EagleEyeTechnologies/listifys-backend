@@ -30,7 +30,7 @@ legacyImagesRouter.use((req, res) => {
 const presignSchema = z.object({
   contentType: z.string().min(3).max(100),
   ext: z.string().min(1).max(10).optional(),
-  folder: z.enum(["listings", "profiles"]).optional(),
+  folder: z.enum(["listings", "profiles", "chats"]).optional(),
 });
 
 export { s3Configured };
@@ -124,12 +124,14 @@ mediaRouter.post(
       .trim();
     const isImage = contentType.startsWith("image/");
     const isVideo = contentType === "video/mp4" || contentType === "video/quicktime";
-    if (!isImage && !isVideo && contentType !== "application/octet-stream") {
-      throw new AppError(400, "Content-Type must be an image or video", "VALIDATION_ERROR");
+    const isPdf = contentType === "application/pdf";
+    if (!isImage && !isVideo && !isPdf && contentType !== "application/octet-stream") {
+      throw new AppError(400, "Content-Type must be an image, video, or PDF", "VALIDATION_ERROR");
     }
 
     const folderRaw = String(req.query.folder || "listings");
-    const folder = folderRaw === "profiles" ? "profiles" : "listings";
+    const folder =
+      folderRaw === "profiles" ? "profiles" : folderRaw === "chats" ? "chats" : "listings";
     const ext = normalizeExt(
       typeof req.query.ext === "string" ? req.query.ext : undefined,
       contentType,
@@ -138,11 +140,11 @@ mediaRouter.post(
     if (!body.length) {
       throw new AppError(400, "Empty upload body", "VALIDATION_ERROR");
     }
-    const maxBytes = isVideo ? 20 * 1024 * 1024 : 12 * 1024 * 1024;
+    const maxBytes = isVideo ? 20 * 1000 * 1000 : 12 * 1024 * 1024;
     if (body.length > maxBytes) {
       throw new AppError(
         413,
-        isVideo ? "Video too large (max 20MB)" : "File too large (max 12MB)",
+        isVideo ? "Video must be 20 MB or smaller" : "File too large (max 12MB)",
         "PAYLOAD_TOO_LARGE",
       );
     }
@@ -165,7 +167,8 @@ mediaRouter.post(
         Bucket: env.AWS_S3_BUCKET_NAME,
         Key: key,
         Body: body,
-        ContentType: isImage || isVideo ? contentType : `image/${ext === "jpg" ? "jpeg" : ext}`,
+        ContentType:
+          isImage || isVideo || isPdf ? contentType : `image/${ext === "jpg" ? "jpeg" : ext}`,
       }),
     );
 

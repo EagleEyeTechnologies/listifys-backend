@@ -15,6 +15,7 @@ import { isUserOnline, isUserOnlineRedis } from "./presence.js";
 import { absolutizeMediaUrl } from "../../utils/mediaUrl.js";
 import { getSellerReviewStats } from "../reviews/reviews.service.js";
 import { chatListingSwitchMessage, chatOpeningMessage } from "./chatOpeningMessage.js";
+import { isEitherBlocked } from "../users/users.service.js";
 
 export const startConversationSchema = z.object({
   recipientId: z.string().min(1),
@@ -94,7 +95,7 @@ export function serializeMessage(msg: InstanceType<typeof Message>, viewerId: st
     readByPeer || (msg.deliveredTo || []).some((id) => id.toString() !== senderId);
   const attachments = (msg.deletedAt ? [] : msg.attachments || [])
     .map((file) => ({
-      url: String(file.url || ""),
+      url: absolutizeMediaUrl(String(file.url || "")),
       name: String(file.name || ""),
       mime: String(file.mime || ""),
     }))
@@ -192,6 +193,8 @@ export async function listConversations(userId: string) {
 
   const users = await User.find({ _id: { $in: otherIds } });
   const userMap = new Map(users.map((u) => [u._id.toString(), u]));
+  const me = await User.findById(userId).select("blockedUsers").lean();
+  const blockedByMe = new Set((me?.blockedUsers || []).map((id) => String(id)));
 
   const soldCounts = await Listing.aggregate<{ _id: mongoose.Types.ObjectId; n: number }>([
     {
@@ -260,6 +263,9 @@ export async function listConversations(userId: string) {
         href: sanitizeListingHref(c.listingHref),
       },
       participantId: otherId,
+      blockedByMe: blockedByMe.has(otherId),
+      blocked:
+        blockedByMe.has(otherId) || (other?.blockedUsers || []).some((id) => String(id) === userId),
       seller: {
         rating: Number(reviews.averageRating) || 0,
         reviews: Number(reviews.totalReviews) || 0,
@@ -345,6 +351,11 @@ export async function sendMessage(
     throw new AppError(404, "Conversation not found", "NOT_FOUND");
   }
 
+  const otherId = conversation.participants.map((p) => p.toString()).find((id) => id !== userId);
+  if (otherId && (await isEitherBlocked(userId, otherId))) {
+    throw new AppError(403, "You can't message this user", "BLOCKED");
+  }
+
   const kind = opts?.kind === "system" ? "system" : "text";
   const storedText = text.trim();
   const attachments = (opts?.attachments || [])
@@ -358,7 +369,10 @@ export async function sendMessage(
   if (!storedText && !attachments.length) {
     throw new AppError(400, "Message is empty", "VALIDATION_ERROR");
   }
-  const preview = storedText || (attachments.length ? "Photo" : "");
+  const hasPdf = attachments.some(
+    (file) => file.mime === "application/pdf" || /\.pdf$/i.test(file.url),
+  );
+  const preview = storedText || (attachments.length ? (hasPdf ? "PDF" : "Photo") : "");
   const message = await Message.create({
     conversation: conversation._id,
     sender: userId,
