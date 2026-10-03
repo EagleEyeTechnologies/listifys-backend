@@ -12,6 +12,7 @@ import { isMongoObjectId, listingSlugFrom } from "../../utils/slug.js";
 import { absolutizeMediaUrl } from "../../utils/mediaUrl.js";
 import { hiddenSellerIds, isEitherBlocked } from "../users/users.service.js";
 import { kv } from "../../redis/client.js";
+import { EventBooking } from "../event-tickets/eventBooking.model.js";
 
 const LISTINGS_CACHE_VER = "listings:catalog-ver";
 const LISTINGS_CACHE_TTL = 90;
@@ -287,7 +288,30 @@ export async function getListingById(idOrSlug: string, viewerId?: string, anonVi
     ? await Listing.findByIdAndUpdate(listing._id, update, { new: true })
     : listing;
   if (!updated) throw new AppError(404, "Listing not found", "NOT_FOUND");
-  return toPublic(updated);
+  const payload = toPublic(updated);
+  if (payload.category === "events") {
+    const [row] = await EventBooking.aggregate<{ sold: number }>([
+      {
+        $match: {
+          listingId: updated._id,
+          status: { $in: ["confirmed", "withdraw_requested"] },
+        },
+      },
+      { $group: { _id: null, sold: { $sum: "$ticketQuantity" } } },
+    ]);
+    const extras =
+      payload.extras && typeof payload.extras === "object"
+        ? { ...(payload.extras as Record<string, unknown>) }
+        : {};
+    const event =
+      extras.event && typeof extras.event === "object"
+        ? { ...(extras.event as Record<string, unknown>) }
+        : {};
+    event.ticketsSold = Number(row?.sold || 0);
+    extras.event = event;
+    payload.extras = extras;
+  }
+  return payload;
 }
 
 export async function updateListing(
@@ -475,11 +499,23 @@ async function browseListingsUncached(
     (query.radiusMiles !== undefined || query.sort === "nearest");
 
   if (useGeo && query.radiusMiles) {
-    filter.coordinates = {
-      $geoWithin: {
-        $centerSphere: [[query.lng, query.lat], query.radiusMiles / 3958.8],
+    // A radius search used to require coordinates, so ads posted without a map
+    // pin never appeared in the app even though the website still listed them.
+    const withinRadius = {
+      coordinates: {
+        $geoWithin: {
+          $centerSphere: [[query.lng, query.lat], query.radiusMiles / 3958.8],
+        },
       },
     };
+    const missingPin = {
+      $or: [
+        { coordinates: { $exists: false } },
+        { coordinates: null },
+        { "coordinates.coordinates": { $exists: false } },
+      ],
+    };
+    filter.$or = [withinRadius, missingPin];
   }
 
   const [rows, total] = await Promise.all([

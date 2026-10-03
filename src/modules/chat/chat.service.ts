@@ -399,7 +399,7 @@ export async function sendMessage(
     const pid = p.toString();
     if (pid === userId) {
       conversation.unreadBy?.set(pid, 0);
-    } else {
+    } else if (kind === "text") {
       const prev = Number(conversation.unreadBy?.get?.(pid) || 0);
       conversation.unreadBy?.set(pid, prev + 1);
       recipients.push(pid);
