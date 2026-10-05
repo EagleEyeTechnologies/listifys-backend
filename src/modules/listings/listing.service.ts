@@ -38,11 +38,12 @@ async function sweepEndedEvents() {
   if (now - lastEventSweepAt < 15_000) return;
   lastEventSweepAt = now;
   const rows = await Listing.find({ category: "events", status: "active" }).limit(500);
-  const ids = rows
-    .filter((row) => isEventPastFromExtras(row.extras))
-    .map((row) => row._id);
+  const ids = rows.filter((row) => isEventPastFromExtras(row.extras)).map((row) => row._id);
   if (!ids.length) return;
-  await Listing.updateMany({ _id: { $in: ids }, status: "active" }, { $set: { status: "expired" } });
+  await Listing.updateMany(
+    { _id: { $in: ids }, status: "active" },
+    { $set: { status: "expired" } },
+  );
   void invalidateListingsCache();
 }
 
