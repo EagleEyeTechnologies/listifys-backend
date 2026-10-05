@@ -210,9 +210,25 @@ export async function requestPasswordResetOtp(email: string) {
 export async function resetPasswordWithOtp(input: z.infer<typeof emailResetPasswordSchema>) {
   const email = input.email.trim().toLowerCase();
   await verifyOtp("email", email, input.code);
-  const user = await User.findOne({ email }).select("+passwordHash");
+  const user = await User.findOne({ email }).select("+passwordHash +passwordHistory");
   if (!user || !user.isActive) {
     throw new AppError(404, "User not found", "NOT_FOUND");
+  }
+  const history = (user.passwordHistory || []).filter((hash) => Boolean(hash));
+  const recent = [user.passwordHash, ...history]
+    .filter((hash): hash is string => Boolean(hash))
+    .slice(0, 3);
+  for (const hash of recent) {
+    if (await verifyPassword(hash, input.password)) {
+      throw new AppError(
+        400,
+        "Choose a password that is not one of your last 3 passwords.",
+        "PASSWORD_REUSED",
+      );
+    }
+  }
+  if (user.passwordHash) {
+    user.passwordHistory = [user.passwordHash, ...history].slice(0, 2);
   }
   user.passwordHash = await hashPassword(input.password);
   if (!user.providers?.some((p) => p.provider === "email")) {

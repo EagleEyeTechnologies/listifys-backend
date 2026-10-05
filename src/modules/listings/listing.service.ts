@@ -6,7 +6,11 @@ import { User } from "../users/user.model.js";
 import { CATEGORY_SLUGS } from "../../types/domain.js";
 import { AppError } from "../../utils/AppError.js";
 import { distanceMiles } from "../../utils/geo.js";
-import { indexListing, removeListingFromIndex } from "../search/search.service.js";
+import {
+  indexListing,
+  removeListingFromIndex,
+  searchListingIds,
+} from "../search/search.service.js";
 import { enqueueListingSideEffect } from "../../queues/listingQueue.js";
 import { isMongoObjectId, listingSlugFrom } from "../../utils/slug.js";
 import { absolutizeMediaUrl } from "../../utils/mediaUrl.js";
@@ -402,7 +406,7 @@ export async function listMyListings(sellerId: string) {
     status: { $ne: "removed" },
   })
     .sort({ createdAt: -1 })
-    .limit(200);
+    .limit(1000);
   return {
     items: rows.map(toPublic),
     page: 1,
@@ -428,6 +432,57 @@ export async function browseListings(
   const result = await browseListingsUncached(countryCode, query, viewerId);
   void kv.set(cacheKey, JSON.stringify(result), LISTINGS_CACHE_TTL).catch(() => undefined);
   return result;
+}
+
+function escapeRegex(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/** Every word must match a title, description, category, place, color, or brand. */
+async function applyKeywordSearch(
+  filter: Record<string, unknown>,
+  q: string,
+  countryCode: "US" | "CA" | "IN",
+) {
+  const indexed = await searchListingIds(q, countryCode);
+
+  const tokens = q
+    .split(/[^a-z0-9]+/i)
+    .map((token) => token.trim())
+    .filter((token) => token.length > 1);
+  const words = tokens.length ? tokens : [q];
+  const clauses = words.map((word) => {
+    const forms = [word];
+    if (word.length > 3 && word.endsWith("s") && !word.endsWith("ss")) {
+      forms.push(word.slice(0, -1));
+    }
+    const rx = new RegExp(forms.map(escapeRegex).join("|"), "i");
+    return {
+      $or: [
+        { title: rx },
+        { description: rx },
+        { category: rx },
+        { subcategory: rx },
+        { subSubcategory: rx },
+        { city: rx },
+        { location: rx },
+        { "extras.vehicle.color": rx },
+        { "extras.vehicle.brand": rx },
+        { "extras.fashion.color": rx },
+        { "extras.fashion.brand": rx },
+        { "extras.electronics.brand": rx },
+        { "extras.mobile.brand": rx },
+        { "extras.furniture.brand": rx },
+        { "extras.furniture.color": rx },
+      ],
+    };
+  });
+  const existing = Array.isArray(filter.$and) ? filter.$and : [];
+  if (indexed && indexed.length) {
+    filter.$and = [...existing, { $or: [{ _id: { $in: indexed } }, { $and: clauses }] }];
+    return;
+  }
+  filter.$and = [...existing, ...clauses];
 }
 
 async function browseListingsUncached(
@@ -469,7 +524,7 @@ async function browseListingsUncached(
   if (query.q) {
     const q = query.q.trim();
     if (isMongoObjectId(q)) filter._id = q;
-    else filter.$text = { $search: q };
+    else await applyKeywordSearch(filter, q, countryCode);
   }
 
   // type alias used by UI: rentals => property deal types in extras
