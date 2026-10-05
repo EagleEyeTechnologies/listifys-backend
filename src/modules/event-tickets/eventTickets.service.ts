@@ -144,6 +144,7 @@ export function serializeBooking(
     venue?: string;
     eventDate?: string;
     eventTime?: string;
+    startsAt?: string;
   },
 ) {
   return {
@@ -166,6 +167,7 @@ export function serializeBooking(
     venue: extras?.venue || "",
     eventDate: extras?.eventDate || "",
     eventTime: extras?.eventTime || "",
+    startsAt: extras?.startsAt || "",
     status: doc.status,
     isFree: doc.isFree,
     confirmedAt: doc.confirmedAt?.toISOString?.() || null,
@@ -191,6 +193,7 @@ async function enrichBooking(doc: InstanceType<typeof EventBooking>) {
     ),
     eventDate: event.date ? String(event.date) : event.eventDate ? String(event.eventDate) : "",
     eventTime: event.time ? String(event.time) : event.eventTime ? String(event.eventTime) : "",
+    startsAt: event.startsAt ? String(event.startsAt) : "",
   });
 }
 

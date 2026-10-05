@@ -8,9 +8,29 @@ import { renderOtpEmail, type OtpEmailPurpose } from "../mail/brandedEmail.js";
 export type OtpDelivery = "logged" | "sms" | "email" | "unavailable";
 
 const TWILIO_VERIFY_MARKER = "twilio-verify";
+/** Wrong guesses allowed while the code is still inside its expiry window. */
+const OTP_MAX_ATTEMPTS = 5;
+const OTP_ATTEMPTS_MESSAGE = "Too many incorrect attempts. Request a new OTP.";
 
 function otpKey(channel: "email" | "phone", target: string) {
   return `otp:${channel}:${target}`;
+}
+
+function attemptsKey(channel: "email" | "phone", target: string) {
+  return `otp-attempts:${channel}:${target}`;
+}
+
+function lockKey(channel: "email" | "phone", target: string) {
+  return `otp-lock:${channel}:${target}`;
+}
+
+function attemptsExceeded(): never {
+  throw new AppError(400, OTP_ATTEMPTS_MESSAGE, "OTP_ATTEMPTS_EXCEEDED");
+}
+
+async function clearOtpState(channel: "email" | "phone", target: string) {
+  await kv.del(attemptsKey(channel, target));
+  await kv.del(lockKey(channel, target));
 }
 
 function twilioAuthHeader(): string {
@@ -56,9 +76,24 @@ function deliveryUnavailable(message: string): never {
   throw new AppError(503, message, "OTP_DELIVERY_UNAVAILABLE");
 }
 
-async function startTwilioVerify(to: string): Promise<void> {
+class TwilioStartError extends Error {
+  constructor(
+    readonly status: number,
+    readonly body: string,
+  ) {
+    super("Twilio Verify start failed");
+  }
+}
+
+function customCodeRejected(err: unknown): boolean {
+  if (!(err instanceof TwilioStartError)) return false;
+  return /custom.?code|60200|60322|60410/i.test(err.body);
+}
+
+async function startTwilioVerify(to: string, customCode?: string): Promise<void> {
   const sid = env.TWILIO_VERIFY_SERVICE_SID!;
   const params = new URLSearchParams({ To: to, Channel: "sms" });
+  if (customCode) params.set("CustomCode", customCode);
   let res: Response;
   try {
     res = await fetch(`https://verify.twilio.com/v2/Services/${sid}/Verifications`, {
@@ -84,12 +119,14 @@ async function startTwilioVerify(to: string): Promise<void> {
       to: maskTarget(to),
       serviceSid: sid,
     });
-    deliveryUnavailable("Unable to send OTP SMS");
+    throw new TwilioStartError(res.status, text.slice(0, 500));
   }
   logger.info("Twilio Verify started", { to: maskTarget(to), status: res.status });
 }
 
-async function checkTwilioVerify(to: string, code: string): Promise<boolean> {
+type TwilioCheck = "approved" | "mismatch" | "exhausted" | "unavailable";
+
+async function checkTwilioVerify(to: string, code: string): Promise<TwilioCheck> {
   const sid = env.TWILIO_VERIFY_SERVICE_SID!;
   const params = new URLSearchParams({ To: to, Code: code });
   let res: Response;
@@ -107,7 +144,7 @@ async function checkTwilioVerify(to: string, code: string): Promise<boolean> {
       to: maskTarget(to),
       err: err instanceof Error ? err.message : String(err),
     });
-    return false;
+    return "unavailable";
   }
   if (!res.ok) {
     const text = await res.text().catch(() => "");
@@ -116,10 +153,14 @@ async function checkTwilioVerify(to: string, code: string): Promise<boolean> {
       text: text.slice(0, 500),
       to: maskTarget(to),
     });
-    return false;
+    // 60202 max checks, 60203 max sends, 20404 verification already canceled/expired.
+    if (/60202|60203|20404/.test(text)) return "exhausted";
+    return "unavailable";
   }
   const data = (await res.json()) as { status?: string };
-  return data.status === "approved";
+  if (data.status === "approved") return "approved";
+  if (data.status === "canceled") return "exhausted";
+  return "mismatch";
 }
 
 async function sendTwilioSms(to: string, body: string): Promise<void> {
@@ -199,8 +240,11 @@ async function sendResendEmail(to: string, code: string, purpose?: OtpEmailPurpo
 
 /**
  * Issue OTP.
- * Phone prefers Twilio Verify (legacy config), then Messages API, then dev log.
- * Email uses Resend when configured.
+ * Phone prefers our own code via Twilio Messages so a wrong guess does not
+ * cancel the code at Twilio while the app countdown is still running.
+ * Verify is the fallback when no From number is configured.
+ * Email uses Resend when configured. Asset URLs in the template are always
+ * https://listifys.com — never CLIENT_URL.
  */
 export async function issueOtp(
   channel: "email" | "phone",
@@ -221,30 +265,62 @@ export async function issueOtp(
 
   if (channel === "phone") {
     const e164 = toE164(target);
-    if (twilioVerifyConfigured()) {
-      await startTwilioVerify(e164);
-      await kv.set(otpKey(channel, target), TWILIO_VERIFY_MARKER, env.OTP_TTL_SECONDS);
-      delivery = "sms";
-      logger.info("OTP issued via Twilio Verify", {
+    await clearOtpState(channel, target);
+
+    if (twilioSmsConfigured()) {
+      const code = String(randomInt(100000, 999999));
+      await kv.set(otpKey(channel, target), code, env.OTP_TTL_SECONDS);
+      await sendTwilioSms(e164, `Your Listifys verification code is ${code}`);
+      logger.info("OTP issued", {
         channel,
         target: maskTarget(target),
-        delivery,
+        delivery: "sms",
       });
-      return { expiresIn: env.OTP_TTL_SECONDS, delivery };
+      return { expiresIn: env.OTP_TTL_SECONDS, delivery: "sms" };
+    }
+
+    if (twilioVerifyConfigured()) {
+      const code = String(randomInt(100000, 999999));
+      try {
+        // Send our code through Verify so Twilio's own check limit cannot
+        // cancel a still-valid code after a couple of wrong guesses.
+        await startTwilioVerify(e164, code);
+        await kv.set(otpKey(channel, target), code, env.OTP_TTL_SECONDS);
+        logger.info("OTP issued via Twilio Verify custom code", {
+          channel,
+          target: maskTarget(target),
+          delivery: "sms",
+        });
+        return { expiresIn: env.OTP_TTL_SECONDS, delivery: "sms" };
+      } catch (err) {
+        if (!customCodeRejected(err)) {
+          deliveryUnavailable("Unable to send OTP SMS");
+        }
+        logger.warn("Twilio custom codes are disabled — using Verify checks", {
+          target: maskTarget(target),
+        });
+        try {
+          await startTwilioVerify(e164);
+        } catch (fallbackErr) {
+          logger.error("Twilio Verify fallback failed", {
+            err: fallbackErr instanceof Error ? fallbackErr.message : String(fallbackErr),
+          });
+          deliveryUnavailable("Unable to send OTP SMS");
+        }
+        await kv.set(otpKey(channel, target), TWILIO_VERIFY_MARKER, env.OTP_TTL_SECONDS);
+        logger.info("OTP issued via Twilio Verify", {
+          channel,
+          target: maskTarget(target),
+          delivery: "sms",
+        });
+        return { expiresIn: env.OTP_TTL_SECONDS, delivery: "sms" };
+      }
     }
 
     const code = String(randomInt(100000, 999999));
     await kv.set(otpKey(channel, target), code, env.OTP_TTL_SECONDS);
 
-    if (twilioSmsConfigured()) {
-      await sendTwilioSms(e164, `Your Listifys verification code is ${code}`);
-      delivery = "sms";
-      logger.info("OTP issued", {
-        channel,
-        target: maskTarget(target),
-        delivery,
-      });
-    } else if (env.NODE_ENV !== "production") {
+    if (env.NODE_ENV !== "production") {
       logger.info("OTP issued (dev — SMS provider not configured)", {
         channel,
         target: maskTarget(target),
@@ -261,6 +337,7 @@ export async function issueOtp(
     return { expiresIn: env.OTP_TTL_SECONDS, delivery };
   }
 
+  await clearOtpState(channel, target);
   const code = String(randomInt(100000, 999999));
   await kv.set(otpKey(channel, target), code, env.OTP_TTL_SECONDS);
 
@@ -290,27 +367,75 @@ export async function issueOtp(
   return { expiresIn: env.OTP_TTL_SECONDS, delivery };
 }
 
-export async function verifyOtp(
+async function registerFailedAttempt(channel: "email" | "phone", target: string): Promise<never> {
+  const key = attemptsKey(channel, target);
+  const current = Number((await kv.get(key)) || "0");
+  const next = Number.isFinite(current) ? current + 1 : 1;
+  if (next >= OTP_MAX_ATTEMPTS) {
+    await kv.del(otpKey(channel, target));
+    await kv.del(key);
+    await kv.set(lockKey(channel, target), "1", env.OTP_TTL_SECONDS);
+    attemptsExceeded();
+  }
+  await kv.set(key, String(next), env.OTP_TTL_SECONDS);
+  throw new AppError(400, "Invalid or expired OTP", "INVALID_OTP");
+}
+
+/**
+ * Check the code without deleting it. A wrong code stays valid until it
+ * expires or the attempt limit is reached, so a later correct entry still works.
+ */
+export async function assertOtpValid(
   channel: "email" | "phone",
   target: string,
   code: string,
 ): Promise<void> {
+  if (await kv.get(lockKey(channel, target))) {
+    attemptsExceeded();
+  }
+
   const stored = await kv.get(otpKey(channel, target));
   if (!stored) {
     throw new AppError(400, "Invalid or expired OTP", "INVALID_OTP");
   }
 
+  const normalized = code.trim();
+
   if (stored === TWILIO_VERIFY_MARKER) {
-    const ok = await checkTwilioVerify(toE164(target), code);
-    if (!ok) {
-      throw new AppError(400, "Invalid or expired OTP", "INVALID_OTP");
+    const result = await checkTwilioVerify(toE164(target), normalized);
+    if (result === "approved") return;
+    if (result === "unavailable") {
+      throw new AppError(
+        503,
+        "Unable to verify the code right now. Try again.",
+        "OTP_DELIVERY_UNAVAILABLE",
+      );
     }
-    await kv.del(otpKey(channel, target));
-    return;
+    if (result === "exhausted") {
+      await kv.del(otpKey(channel, target));
+      await kv.del(attemptsKey(channel, target));
+      await kv.set(lockKey(channel, target), "1", env.OTP_TTL_SECONDS);
+      attemptsExceeded();
+    }
+    await registerFailedAttempt(channel, target);
   }
 
-  if (stored !== code) {
-    throw new AppError(400, "Invalid or expired OTP", "INVALID_OTP");
+  if (stored !== normalized) {
+    await registerFailedAttempt(channel, target);
   }
+}
+
+export async function consumeOtp(channel: "email" | "phone", target: string): Promise<void> {
   await kv.del(otpKey(channel, target));
+  await kv.del(attemptsKey(channel, target));
+  await kv.del(lockKey(channel, target));
+}
+
+export async function verifyOtp(
+  channel: "email" | "phone",
+  target: string,
+  code: string,
+): Promise<void> {
+  await assertOtpValid(channel, target, code);
+  await consumeOtp(channel, target);
 }

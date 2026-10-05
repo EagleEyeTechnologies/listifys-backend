@@ -241,7 +241,7 @@ usersRouter.post(
       .object({
         deviceId: z.string().min(8).max(512),
         platform: z.string().min(2).max(40).default("web"),
-        pushToken: z.string().min(8).max(512).optional(),
+        pushToken: z.string().max(4000).optional(),
       })
       .safeParse(req.body);
     if (!parsed.success) {
@@ -266,11 +266,14 @@ usersRouter.post(
       deviceId: parsed.data.deviceId,
       platform: parsed.data.platform,
       lastSeenAt: new Date(),
-      pushToken: parsed.data.pushToken
-        ? parsed.data.pushToken
-        : idx >= 0
-          ? devices[idx].pushToken
-          : undefined,
+      pushToken:
+        parsed.data.pushToken === ""
+          ? undefined
+          : parsed.data.pushToken
+            ? parsed.data.pushToken
+            : idx >= 0
+              ? devices[idx].pushToken
+              : undefined,
     };
     if (idx >= 0) devices[idx] = row;
     else devices.push(row);

@@ -12,6 +12,14 @@ import {
 
 export const notificationsRouter = Router();
 
+notificationsRouter.get(
+  "/vapid-public-key",
+  asyncHandler(async (_req, res) => {
+    const { getVapidPublicKey } = await import("./webPush.service.js");
+    res.json({ success: true, data: { publicKey: getVapidPublicKey() } });
+  }),
+);
+
 notificationsRouter.use(requireAuth);
 
 notificationsRouter.get(

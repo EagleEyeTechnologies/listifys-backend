@@ -1,8 +1,10 @@
 import { randomUUID } from "crypto";
 import { z } from "zod";
+import { personNameSchema, optionalPersonNameSchema } from "../../utils/personName.js";
 import * as argon2 from "argon2";
 import { User } from "../users/user.model.js";
-import { issueOtp, verifyOtp } from "./otp.js";
+import { assertStrongPassword } from "./passwordPolicy.js";
+import { assertOtpValid, consumeOtp, issueOtp, verifyOtp } from "./otp.js";
 import {
   isRefreshTokenValid,
   issueTokenPair,
@@ -33,14 +35,14 @@ export const emailRequestSchema = z.object({
 export const emailVerifySchema = z.object({
   email: z.string().email(),
   code: z.string().min(4).max(8),
-  name: z.string().optional(),
+  name: optionalPersonNameSchema,
   countryCode: z.enum(["US", "CA", "IN"]).optional(),
 });
 
 export const emailRegisterSchema = z.object({
   email: z.string().email(),
   password: z.string().min(8).max(128),
-  name: z.string().min(1).max(100),
+  name: personNameSchema,
   code: z.string().min(4).max(8),
   countryCode: z.enum(["US", "CA", "IN"]).optional(),
 });
@@ -66,7 +68,7 @@ export const phoneVerifySchema = z.object({
   phone: z.string().min(8).max(20),
   phoneCode: z.string().min(1).max(5).default("+91"),
   code: z.string().min(4).max(8),
-  name: z.string().optional(),
+  name: optionalPersonNameSchema,
   countryCode: z.enum(["US", "CA", "IN"]).optional(),
   purpose: z.enum(["login", "register"]).optional(),
 });
@@ -79,7 +81,7 @@ export const socialSchema = z
   .object({
     idToken: z.string().min(10).optional(),
     accessToken: z.string().min(10).optional(),
-    name: z.string().optional(),
+    name: z.string().max(80).optional(),
     email: z.string().email().optional(),
     givenName: z.string().optional(),
     familyName: z.string().optional(),
@@ -130,6 +132,7 @@ async function verifyPassword(hash: string, password: string) {
 
 /** Email register: requires a prior OTP from requestRegisterEmailOtp. */
 export async function registerWithEmail(input: z.infer<typeof emailRegisterSchema>) {
+  assertStrongPassword(input.password);
   const email = input.email.trim().toLowerCase();
   await verifyOtp("email", email, input.code);
 
@@ -208,8 +211,11 @@ export async function requestPasswordResetOtp(email: string) {
 
 /** Verify OTP and set a new password. */
 export async function resetPasswordWithOtp(input: z.infer<typeof emailResetPasswordSchema>) {
+  assertStrongPassword(input.password);
   const email = input.email.trim().toLowerCase();
-  await verifyOtp("email", email, input.code);
+  // Confirm the code without deleting it. A reused password or a second click
+  // must not turn a still-running countdown into "Invalid or expired OTP".
+  await assertOtpValid("email", email, input.code);
   const user = await User.findOne({ email }).select("+passwordHash +passwordHistory");
   if (!user || !user.isActive) {
     throw new AppError(404, "User not found", "NOT_FOUND");
@@ -235,6 +241,7 @@ export async function resetPasswordWithOtp(input: z.infer<typeof emailResetPassw
     user.providers.push({ provider: "email", providerId: email });
   }
   await user.save();
+  await consumeOtp("email", email);
   const tokens = await tokensFor(user._id.toString());
   return { user: publicUser(user), ...tokens };
 }

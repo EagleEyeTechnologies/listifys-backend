@@ -8,6 +8,13 @@ import { listingHrefFromDoc } from "../chat/listingHref.js";
 import { startConversation } from "../chat/chat.service.js";
 import { createNotification } from "../notifications/notification.service.js";
 import { absolutizeMediaUrl } from "../../utils/mediaUrl.js";
+import { maxOfferAmount, offerLimitLabel } from "./offerLimits.js";
+
+function assertOfferAmount(amount: number, currency?: string | null) {
+  if (!Number.isFinite(amount) || amount <= 0 || amount > maxOfferAmount(currency)) {
+    throw new AppError(400, `Offer cannot exceed ${offerLimitLabel(currency)}`, "OFFER_TOO_HIGH");
+  }
+}
 
 export const createOfferSchema = z.object({
   listingId: z.string().min(1),
@@ -80,6 +87,7 @@ export async function createOffer(buyerId: string, input: z.infer<typeof createO
   if (sellerId === buyerId) {
     throw new AppError(400, "Cannot offer on your own listing", "VALIDATION_ERROR");
   }
+  assertOfferAmount(input.amount, listing.currency);
 
   const offer = await ListingOffer.create({
     listing: listing._id,
@@ -144,6 +152,7 @@ export async function updateOffer(
     if (!input.counterAmount) {
       throw new AppError(400, "Counter amount required", "VALIDATION_ERROR");
     }
+    assertOfferAmount(input.counterAmount, offer.currency);
     offer.status = "countered";
     offer.counterAmount = input.counterAmount;
     if (input.message) offer.message = input.message;

@@ -15,6 +15,7 @@ import {
   isApplePrivateRelayEmail,
 } from "../../utils/phone.js";
 import { socialLinkError, type SocialField } from "../../utils/socialLinks.js";
+import { personNameSchema } from "../../utils/personName.js";
 
 function socialUrlField(field: SocialField, max: number) {
   return z
@@ -29,7 +30,7 @@ function socialUrlField(field: SocialField, max: number) {
 
 export const updateMeSchema = z
   .object({
-    name: z.string().min(1).max(100).optional(),
+    name: personNameSchema.optional(),
     avatar: z.union([z.string().max(4000), z.literal("")]).optional(),
     banner: z.union([z.string().max(4000), z.literal("")]).optional(),
     bio: z.string().max(1000).optional(),
