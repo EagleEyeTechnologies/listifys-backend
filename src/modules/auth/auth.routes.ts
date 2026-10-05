@@ -1,6 +1,6 @@
 import { Router, type Response } from "express";
 import { asyncHandler } from "../../utils/asyncHandler.js";
-import { authRateLimit } from "../../middleware/rateLimit.js";
+import { authIpRateLimit, authSubjectRateLimit } from "../../middleware/rateLimit.js";
 import {
   emailLoginSchema,
   emailRegisterSchema,
@@ -29,7 +29,7 @@ import { env } from "../../config/env.js";
 
 export const authRouter = Router();
 
-authRouter.use(authRateLimit);
+authRouter.use(authSubjectRateLimit, authIpRateLimit);
 
 function setAuthCookies(res: Response, accessToken: string, refreshToken: string) {
   const secure = env.NODE_ENV === "production";

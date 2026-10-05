@@ -1,7 +1,8 @@
 export type OtpEmailPurpose = "register" | "login" | "password_reset" | "email_change" | "verify";
 
 const SITE = "https://listifys.com";
-const LOGO = `${SITE}/icons/logo.png`;
+/** Public wordmark on listifys.com. /icons/logo.png 404s, so mail clients showed a broken image. */
+const LOGO = `${SITE}/images/nav-logo.jpeg`;
 const SUPPORT = "contact@listifys.com";
 
 const COPY: Record<
@@ -114,7 +115,7 @@ export function renderBrandedEmail(input: { preheader: string; title: string; bo
           <tr>
             <td align="left" style="padding:0 4px 16px;">
               <a href="${SITE}" style="text-decoration:none;">
-                <img src="${LOGO}" width="140" alt="Listifys" style="display:block;border:0;outline:none;height:auto;max-width:140px;" />
+                <img src="${LOGO}" width="140" height="47" alt="Listifys" style="display:block;border:0;outline:none;height:auto;max-width:140px;background-color:#ffffff;border-radius:8px;" />
               </a>
             </td>
           </tr>

@@ -7,6 +7,7 @@ import { cert, getApps, initializeApp, type App } from "firebase-admin/app";
 import { getMessaging } from "firebase-admin/messaging";
 import { env } from "../../config/env.js";
 import { logger } from "../../utils/logger.js";
+import { sendWebPush } from "./webPush.service.js";
 
 let app: App | null = null;
 let initAttempted = false;
@@ -110,9 +111,9 @@ export async function sendFcmToTokens(
 ): Promise<{ success: number; failure: number; invalidTokens: string[] }> {
   const firebaseApp = ensureApp();
   const unique = [...new Set(tokens.filter(Boolean))];
-  if (!firebaseApp || !unique.length) return { success: 0, failure: 0, invalidTokens: [] };
+  if (!unique.length) return { success: 0, failure: 0, invalidTokens: [] };
 
-  const messaging = getMessaging(firebaseApp);
+  const messaging = firebaseApp ? getMessaging(firebaseApp) : null;
   let success = 0;
   let failure = 0;
   const invalidTokens: string[] = [];
@@ -120,10 +121,72 @@ export async function sendFcmToTokens(
 
   for (const token of unique) {
     try {
+      if (token.startsWith("{") && token.includes("endpoint")) {
+        const result = await sendWebPush(token, {
+          title: payload.title,
+          body: payload.body,
+          href: data.href,
+        });
+        if (result === "invalid") invalidTokens.push(token);
+        else success += 1;
+        continue;
+      }
+      if (token.startsWith("ExponentPushToken")) {
+        const res = await fetch("https://exp.host/--/api/v2/push/send", {
+          method: "POST",
+          headers: {
+            Accept: "application/json",
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            to: token,
+            title: payload.title,
+            body: payload.body,
+            sound: "default",
+            priority: "high",
+            channelId: "default",
+            data,
+          }),
+        });
+        const json = (await res.json().catch(() => ({}))) as {
+          data?: { status?: string; details?: { error?: string } };
+        };
+        const status = json.data?.status;
+        const error = json.data?.details?.error || "";
+        if (!res.ok || status === "error") {
+          failure += 1;
+          if (/DeviceNotRegistered|InvalidCredentials/i.test(error)) invalidTokens.push(token);
+        } else {
+          success += 1;
+        }
+        continue;
+      }
+      if (!messaging) {
+        failure += 1;
+        continue;
+      }
       await messaging.send({
         token,
         notification: { title: payload.title, body: payload.body },
         data,
+        android: {
+          priority: "high",
+          notification: {
+            channelId: "default",
+            sound: "default",
+            priority: "high",
+            visibility: "public",
+          },
+        },
+        apns: {
+          headers: { "apns-priority": "10" },
+          payload: {
+            aps: {
+              sound: "default",
+              alert: { title: payload.title, body: payload.body },
+            },
+          },
+        },
       });
       success += 1;
     } catch (err) {

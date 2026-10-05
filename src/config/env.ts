@@ -44,6 +44,9 @@ const envSchema = z.object({
   FIREBASE_PRIVATE_KEY: z.string().optional(),
   FIREBASE_SERVICE_ACCOUNT_PATH: z.string().optional(),
   FIREBASE_SERVICE_ACCOUNT_JSON: z.string().optional(),
+  VAPID_PUBLIC_KEY: z.string().optional(),
+  VAPID_PRIVATE_KEY: z.string().optional(),
+  VAPID_SUBJECT: z.string().optional(),
   OTP_TTL_SECONDS: z.coerce.number().default(300),
   /** Server-only Google Places / Geocoding key — never expose to clients */
   GOOGLE_MAPS_SERVER_KEY: z.string().optional(),

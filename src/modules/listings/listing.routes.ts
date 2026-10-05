@@ -4,6 +4,7 @@ import { optionalAuth, requireAuth } from "../../middleware/auth.js";
 import { AppError } from "../../utils/AppError.js";
 import {
   browseListings,
+  countListingsByCategory,
   createListing,
   createListingSchema,
   getListingById,
@@ -35,6 +36,15 @@ listingsRouter.get(
     }
     const data = await browseListings(req.countryCode, parsed.data, req.userId);
     res.json({ success: true, data });
+  }),
+);
+
+listingsRouter.get(
+  "/counts",
+  optionalAuth,
+  asyncHandler(async (req, res) => {
+    const counts = await countListingsByCategory(req.countryCode);
+    res.json({ success: true, data: { counts } });
   }),
 );
 

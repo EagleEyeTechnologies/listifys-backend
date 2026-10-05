@@ -17,6 +17,7 @@ import { absolutizeMediaUrl } from "../../utils/mediaUrl.js";
 import { hiddenSellerIds, isEitherBlocked } from "../users/users.service.js";
 import { kv } from "../../redis/client.js";
 import { EventBooking } from "../event-tickets/eventBooking.model.js";
+import { isEventPastFromExtras } from "../event-tickets/eventDate.js";
 
 const LISTINGS_CACHE_VER = "listings:catalog-ver";
 const LISTINGS_CACHE_TTL = 90;
@@ -27,6 +28,23 @@ async function listingsCacheVersion() {
 
 async function invalidateListingsCache() {
   await kv.set(LISTINGS_CACHE_VER, String(Date.now()), 60 * 60 * 24);
+}
+
+let lastEventSweepAt = 0;
+
+/** Move events whose start time has passed from Active to Completed (stored as expired). */
+async function sweepEndedEvents() {
+  const now = Date.now();
+  if (now - lastEventSweepAt < 15_000) return;
+  lastEventSweepAt = now;
+  const rows = await Listing.find({ category: "events", status: "active" }).limit(500);
+  const ids = rows.filter((row) => isEventPastFromExtras(row.extras)).map((row) => row._id);
+  if (!ids.length) return;
+  await Listing.updateMany(
+    { _id: { $in: ids }, status: "active" },
+    { $set: { status: "expired" } },
+  );
+  void invalidateListingsCache();
 }
 
 export const createListingSchema = z.object({
@@ -267,6 +285,15 @@ export async function getListingById(idOrSlug: string, viewerId?: string, anonVi
   if (!listing || listing.status === "removed") {
     throw new AppError(404, "Listing not found", "NOT_FOUND");
   }
+  if (
+    listing.category === "events" &&
+    listing.status === "active" &&
+    isEventPastFromExtras(listing.extras)
+  ) {
+    listing.status = "expired";
+    await listing.save();
+    void invalidateListingsCache();
+  }
   if (viewerId && (await isEitherBlocked(viewerId, listing.seller.toString()))) {
     throw new AppError(404, "Listing not found", "NOT_FOUND");
   }
@@ -400,7 +427,21 @@ export async function softDeleteListing(id: string, sellerId: string) {
   return { id };
 }
 
+export async function countListingsByCategory(countryCode: "US" | "CA" | "IN") {
+  await sweepEndedEvents();
+  const rows = await Listing.aggregate<{ _id: string; count: number }>([
+    { $match: { status: "active", countryCode } },
+    { $group: { _id: "$category", count: { $sum: 1 } } },
+  ]);
+  const counts: Record<string, number> = {};
+  for (const row of rows) {
+    if (row._id) counts[String(row._id)] = row.count;
+  }
+  return counts;
+}
+
 export async function listMyListings(sellerId: string) {
+  await sweepEndedEvents();
   const rows = await Listing.find({
     seller: sellerId,
     status: { $ne: "removed" },
@@ -421,6 +462,7 @@ export async function browseListings(
   query: z.infer<typeof listQuerySchema>,
   viewerId?: string,
 ) {
+  await sweepEndedEvents();
   const version = await listingsCacheVersion();
   const cacheKey = `listings:${version}:${countryCode}:${viewerId || "anon"}:${JSON.stringify(query)}`;
   try {
@@ -490,6 +532,7 @@ async function browseListingsUncached(
   query: z.infer<typeof listQuerySchema>,
   viewerId?: string,
 ) {
+  await sweepEndedEvents();
   const filter: Record<string, unknown> = {
     status: query.status || "active",
   };
@@ -520,7 +563,16 @@ async function browseListingsUncached(
   }
   if (query.category) filter.category = query.category;
   if (query.intent) filter.intent = query.intent;
-  if (query.city) filter.city = new RegExp(`^${query.city}$`, "i");
+  const cityName = query.city?.trim();
+  const useGeo =
+    query.lat !== undefined &&
+    query.lng !== undefined &&
+    (query.radiusMiles !== undefined || query.sort === "nearest");
+  // A radius search must not also require an exact city, or nearby ads in
+  // neighboring localities disappear. City is applied below for unpinned ads.
+  if (cityName && !(useGeo && query.radiusMiles)) {
+    filter.city = new RegExp(`^${cityName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, "i");
+  }
   if (query.q) {
     const q = query.q.trim();
     if (isMongoObjectId(q)) filter._id = q;
@@ -548,14 +600,7 @@ async function browseListingsUncached(
   if (query.sort === "price-asc") sort = { price: 1 };
   if (query.sort === "price-desc") sort = { price: -1 };
 
-  const useGeo =
-    query.lat !== undefined &&
-    query.lng !== undefined &&
-    (query.radiusMiles !== undefined || query.sort === "nearest");
-
   if (useGeo && query.radiusMiles) {
-    // A radius search used to require coordinates, so ads posted without a map
-    // pin never appeared in the app even though the website still listed them.
     const withinRadius = {
       coordinates: {
         $geoWithin: {
@@ -563,14 +608,14 @@ async function browseListingsUncached(
         },
       },
     };
-    const missingPin = {
-      $or: [
-        { coordinates: { $exists: false } },
-        { coordinates: null },
-        { "coordinates.coordinates": { $exists: false } },
-      ],
-    };
-    filter.$or = [withinRadius, missingPin];
+    // Same country only (countryCode is already on the filter). Ads without a
+    // map pin stay in that country's feed; other markets are not included.
+    filter.$or = [
+      withinRadius,
+      { coordinates: { $exists: false } },
+      { coordinates: null },
+      { "coordinates.coordinates": { $exists: false } },
+    ];
   }
 
   const [rows, total] = await Promise.all([
