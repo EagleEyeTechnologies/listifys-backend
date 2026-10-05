@@ -54,6 +54,8 @@ export async function indexListing(listing: ListingDocument): Promise<void> {
       description: listing.description,
       category: listing.category,
       subcategory: listing.subcategory,
+      subSubcategory: listing.subSubcategory,
+      ...searchableExtras(listing),
       intent: listing.intent,
       price: listing.price,
       currency: listing.currency,
@@ -67,6 +69,65 @@ export async function indexListing(listing: ListingDocument): Promise<void> {
       createdAt: listing.createdAt,
     },
   });
+}
+
+function searchableExtras(listing: ListingDocument) {
+  const extras = (listing.extras || {}) as Record<string, unknown>;
+  const colors: string[] = [];
+  const brands: string[] = [];
+  for (const key of ["vehicle", "fashion", "electronics", "mobile", "furniture"]) {
+    const bag = extras[key];
+    if (!bag || typeof bag !== "object") continue;
+    const row = bag as Record<string, unknown>;
+    if (row.color) colors.push(String(row.color));
+    if (row.brand) brands.push(String(row.brand));
+  }
+  return {
+    color: colors.join(" "),
+    brand: brands.join(" "),
+  };
+}
+
+/** Ranked listing ids when Elasticsearch is up. Null means the caller should use MongoDB. */
+export async function searchListingIds(q: string, countryCode: string): Promise<string[] | null> {
+  const query = q.trim();
+  if (!enabled || !client || !query) return null;
+  try {
+    const result = await client.search({
+      index: INDEX,
+      size: 200,
+      query: {
+        bool: {
+          filter: [{ term: { countryCode } }, { term: { status: "active" } }],
+          must: {
+            multi_match: {
+              query,
+              fields: [
+                "title^4",
+                "description",
+                "category^2",
+                "subcategory^2",
+                "subSubcategory^2",
+                "color^3",
+                "brand^2",
+                "city",
+                "location",
+              ],
+              fuzziness: "AUTO",
+              operator: "and",
+            },
+          },
+        },
+      },
+    });
+    const hits = result.hits?.hits || [];
+    return hits.map((hit) => String(hit._id)).filter(Boolean);
+  } catch (err) {
+    logger.warn("Elasticsearch query failed — using database search", {
+      err: err instanceof Error ? err.message : String(err),
+    });
+    return null;
+  }
 }
 
 export async function removeListingFromIndex(id: string): Promise<void> {

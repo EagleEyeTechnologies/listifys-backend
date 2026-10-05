@@ -33,6 +33,8 @@ const userSchema = new Schema(
       default: [],
     },
     passwordHash: { type: String, select: false },
+    /** Previous password hashes. Reset cannot reuse the current password or these. */
+    passwordHistory: { type: [String], select: false, default: [] },
     providers: {
       type: [
         {
