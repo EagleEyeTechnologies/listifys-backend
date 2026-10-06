@@ -25,6 +25,7 @@ import {
   verifyPhoneOtp,
 } from "./auth.service.js";
 import { AppError } from "../../utils/AppError.js";
+import { recordLogin } from "./loginActivity.js";
 import { env } from "../../config/env.js";
 
 export const authRouter = Router();
@@ -56,6 +57,7 @@ authRouter.post(
     }
     const data = await registerWithEmail(parsed.data);
     setAuthCookies(res, data.accessToken, data.refreshToken);
+    recordLogin(req, data.user?.id, "register");
     res.status(201).json({ success: true, data });
   }),
 );
@@ -81,6 +83,7 @@ authRouter.post(
     }
     const data = await loginWithEmail(parsed.data);
     setAuthCookies(res, data.accessToken, data.refreshToken);
+    recordLogin(req, data.user?.id, "password");
     res.json({ success: true, data });
   }),
 );
@@ -106,6 +109,7 @@ authRouter.post(
     }
     const data = await resetPasswordWithOtp(parsed.data);
     setAuthCookies(res, data.accessToken, data.refreshToken);
+    recordLogin(req, data.user?.id, "password_reset");
     res.json({ success: true, data });
   }),
 );
@@ -131,6 +135,7 @@ authRouter.post(
     }
     const data = await verifyEmailOtp(parsed.data);
     setAuthCookies(res, data.accessToken, data.refreshToken);
+    recordLogin(req, data.user?.id, "email_otp");
     res.json({ success: true, data });
   }),
 );
@@ -160,6 +165,7 @@ authRouter.post(
     }
     const data = await verifyPhoneOtp(parsed.data);
     setAuthCookies(res, data.accessToken, data.refreshToken);
+    recordLogin(req, data.user?.id, "phone_otp");
     res.json({ success: true, data });
   }),
 );
@@ -202,6 +208,7 @@ authRouter.post(
     }
     const data = await socialLogin("google", parsed.data);
     setAuthCookies(res, data.accessToken, data.refreshToken);
+    recordLogin(req, data.user?.id, "google");
     res.json({ success: true, data });
   }),
 );
@@ -215,6 +222,7 @@ authRouter.post(
     }
     const data = await socialLogin("apple", parsed.data);
     setAuthCookies(res, data.accessToken, data.refreshToken);
+    recordLogin(req, data.user?.id, "apple");
     res.json({ success: true, data });
   }),
 );

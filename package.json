@@ -29,7 +29,10 @@
     "chat:merge": "npx tsx src/scripts/merge-chat-conversations.ts",
     "chat:merge:write": "npx tsx src/scripts/merge-chat-conversations.ts --write",
     "slugs:backfill": "npx tsx src/scripts/backfill-slugs.ts",
-    "slugs:backfill:write": "npx tsx src/scripts/backfill-slugs.ts --write"
+    "slugs:backfill:write": "npx tsx src/scripts/backfill-slugs.ts --write",
+    "coords:backfill": "npx tsx src/scripts/backfill-listing-coordinates.ts",
+    "coords:backfill:write": "npx tsx src/scripts/backfill-listing-coordinates.ts --write",
+    "search:reindex": "npx tsx src/scripts/reindex-search.ts"
   },
   "engines": {
     "node": ">=20 <25"
@@ -37,7 +40,6 @@
   "dependencies": {
     "@aws-sdk/client-s3": "^3.993.0",
     "@aws-sdk/s3-request-presigner": "^3.993.0",
-    "@elastic/elasticsearch": "^9.3.4",
     "@types/compression": "^1.7.5",
     "@types/cookie-parser": "^1.4.8",
     "@types/cors": "^2.8.17",
@@ -59,6 +61,7 @@
     "ioredis": "^5.4.2",
     "jose": "^6.2.12",
     "jsonwebtoken": "^9.0.2",
+    "meilisearch": "^0.62.0",
     "mongoose": "^9.2.1",
     "socket.io": "^4.8.3",
     "tsx": "^4.19.2",

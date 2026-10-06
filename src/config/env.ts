@@ -31,9 +31,10 @@ const envSchema = z.object({
    */
   ADMIN_EMAILS: z.string().optional(),
   DEFAULT_COUNTRY_CODE: z.enum(["US", "CA", "IN"]).default("IN"),
-  ELASTICSEARCH_URL: z.string().optional(),
-  ELASTIC_USERNAME: z.string().optional(),
-  ELASTIC_PASSWORD: z.string().optional(),
+  MEILISEARCH_HOST: z.string().optional(),
+  /** Admin (or master) key — the server writes documents and settings. */
+  MEILISEARCH_API_KEY: z.string().optional(),
+  MEILISEARCH_INDEX: z.string().optional(),
   AWS_ACCESS_KEY_ID: z.string().optional(),
   AWS_SECRET_ACCESS_KEY: z.string().optional(),
   AWS_REGION: z.string().default("us-east-1"),
@@ -50,6 +51,11 @@ const envSchema = z.object({
   OTP_TTL_SECONDS: z.coerce.number().default(300),
   /** Server-only Google Places / Geocoding key — never expose to clients */
   GOOGLE_MAPS_SERVER_KEY: z.string().optional(),
+  /**
+   * IP → approximate location for the profile sign-in activity list. `{ip}` is replaced.
+   * Works with ipwho.is, ipapi.co (`https://ipapi.co/{ip}/json/`) or ip-api.com. Set to `off` to disable.
+   */
+  GEOIP_LOOKUP_URL: z.string().default("https://ipwho.is/{ip}"),
 
   // Social auth (ported from version-1/server) — optional until configured
   GOOGLE_CLIENT_ID: z.string().optional(),

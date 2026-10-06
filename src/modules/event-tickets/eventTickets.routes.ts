@@ -79,7 +79,12 @@ eventTicketsRouter.post(
     });
     res.json({
       success: true,
-      message: "Withdrawal request sent to the organizer.",
+      message:
+        booking.status === "withdraw_requested"
+          ? "Withdrawal request sent to the organizer."
+          : booking.status === "refunded"
+            ? "Booking cancelled. Your refund is on its way."
+            : "Booking cancelled.",
       data: booking,
     });
   }),

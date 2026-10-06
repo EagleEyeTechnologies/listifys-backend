@@ -8,7 +8,7 @@ New Express + TypeScript backend. Leaves `version-1/server` (legacy JS API) unto
 - MongoDB / Mongoose — unified `listings` + `users`
 - Redis (optional in dev) — OTP + refresh tokens
 - BullMQ — email + listing side-effect queues
-- Elasticsearch client stub
+- Meilisearch listing search (optional; falls back to MongoDB)
 - S3 presign (mock when AWS env missing)
 
 ## Quick start

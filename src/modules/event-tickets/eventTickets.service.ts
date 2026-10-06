@@ -7,7 +7,7 @@ import { User } from "../users/user.model.js";
 import { createNotification } from "../notifications/notification.service.js";
 import { refundProviderPayment } from "../payments/payments.service.js";
 import { AppError } from "../../utils/AppError.js";
-import { isEventPastFromExtras } from "./eventDate.js";
+import { eventStartFromExtras, isEventPastFromExtras } from "./eventDate.js";
 import { logger } from "../../utils/logger.js";
 import { absolutizeMediaUrl } from "../../utils/mediaUrl.js";
 import type { CountryCode } from "../../types/domain.js";
@@ -17,6 +17,12 @@ import {
   resolveTicketPricing,
   syncEventInventory,
 } from "./eventInventory.js";
+import {
+  normalizeRefundPolicy,
+  quoteRefund,
+  refundPolicyFromExtras,
+  type RefundPolicy,
+} from "./refundPolicy.js";
 
 type BookingDoc = InstanceType<typeof EventBooking>;
 type ListingDoc = InstanceType<typeof Listing>;
@@ -57,7 +63,7 @@ async function findActiveEvent(listingId: string) {
   if (listing.status !== "active") {
     throw new AppError(400, "This event is not available for booking", "EVENT_UNAVAILABLE");
   }
-  if (isEventPastFromExtras(listing.extras)) {
+  if (isEventPastFromExtras(listing.extras, listing.countryCode)) {
     throw new AppError(400, "This event has ended. Ticket booking is closed.", "EVENT_ENDED");
   }
   return listing;
@@ -127,6 +133,35 @@ async function confirmBooking(booking: BookingDoc, listing: ListingDoc) {
   return booking;
 }
 
+function metadataOf(doc: BookingDoc): Record<string, unknown> {
+  return doc.metadata && typeof doc.metadata === "object"
+    ? (doc.metadata as Record<string, unknown>)
+    : {};
+}
+
+/** Policy the guest booked under; falls back to the event's current one for older bookings. */
+function bookingPolicy(doc: BookingDoc, listingExtras?: unknown): RefundPolicy | null {
+  return (
+    normalizeRefundPolicy(metadataOf(doc).refundPolicy) || refundPolicyFromExtras(listingExtras)
+  );
+}
+
+function refundAmountFor(doc: BookingDoc, percent: number) {
+  if (doc.isFree || Number(doc.totalAmount) <= 0) return 0;
+  return Math.floor(Number(doc.totalAmount) * percent) / 100;
+}
+
+/** What happens if the guest cancels right now. `null` when the event has no policy. */
+function cancellationFor(
+  doc: BookingDoc,
+  policy: RefundPolicy | null,
+  startsAt?: string | Date | null,
+) {
+  if (!policy || doc.status !== "confirmed") return null;
+  const quote = quoteRefund(policy, startsAt);
+  return { ...quote, refundAmount: quote.allowed ? refundAmountFor(doc, quote.percent) : 0 };
+}
+
 export function serializeBooking(
   doc: BookingDoc,
   extras?: {
@@ -135,12 +170,11 @@ export function serializeBooking(
     eventDate?: string;
     eventTime?: string;
     startsAt?: string;
+    listingExtras?: unknown;
   },
 ) {
-  const metadata =
-    doc.metadata && typeof doc.metadata === "object"
-      ? (doc.metadata as Record<string, unknown>)
-      : {};
+  const metadata = metadataOf(doc);
+  const policy = bookingPolicy(doc, extras?.listingExtras);
   return {
     id: doc._id.toString(),
     listingId: doc.listingId.toString(),
@@ -170,6 +204,14 @@ export function serializeBooking(
     withdrawReason: typeof metadata.withdrawReason === "string" ? metadata.withdrawReason : "",
     cancelReason: typeof metadata.cancelReason === "string" ? metadata.cancelReason : "",
     cancelledBy: doc.cancelledBy || "",
+    refundPercent: typeof metadata.refundPercent === "number" ? metadata.refundPercent : null,
+    refundAmount: typeof metadata.refundAmount === "number" ? metadata.refundAmount : null,
+    refundPolicy: policy,
+    cancellation: cancellationFor(
+      doc,
+      policy,
+      eventStartFromExtras(extras?.listingExtras, doc.countryCode) ?? extras?.startsAt,
+    ),
     confirmedAt: doc.confirmedAt?.toISOString?.() || null,
     cancelledAt: doc.cancelledAt?.toISOString?.() || null,
     refundedAt: doc.refundedAt?.toISOString?.() || null,
@@ -198,7 +240,13 @@ async function enrichBooking(doc: BookingDoc) {
     eventDate: event.date ? String(event.date) : event.eventDate ? String(event.eventDate) : "",
     eventTime: event.time ? String(event.time) : event.eventTime ? String(event.eventTime) : "",
     startsAt: event.startsAt ? String(event.startsAt) : "",
+    listingExtras: listing?.extras,
   });
+}
+
+function policySnapshot(listing: ListingDoc) {
+  const refundPolicy = refundPolicyFromExtras(listing.extras);
+  return refundPolicy ? { refundPolicy } : {};
 }
 
 type BookInput = {
@@ -247,6 +295,7 @@ export async function confirmFreeBooking(input: BookInput) {
     eventTitle: listing.title || "",
     status: "pending_payment",
     isFree: true,
+    metadata: policySnapshot(listing),
   });
 
   await confirmBooking(booking, listing);
@@ -307,6 +356,7 @@ export async function createPendingTicketCheckout(
     eventTitle: listing.title || "",
     status: "pending_payment",
     isFree: false,
+    metadata: policySnapshot(listing),
   });
 
   const payment = await Payment.create({
@@ -490,6 +540,14 @@ export async function getOrganizerBookings(listingId: string, userId: string) {
   });
   const inventory = await computeInventory(listing);
   const confirmed = rows.filter((r) => r.status === "confirmed");
+  const policyRefund = (r: BookingDoc) => {
+    const amount = metadataOf(r).refundAmount;
+    return typeof amount === "number" ? amount : null;
+  };
+  /** Kept by the organizer when a guest cancelled under the policy for a partial refund. */
+  const retained = rows
+    .filter((r) => r.cancelledBy === "attendee" && policyRefund(r) != null)
+    .reduce((sum, r) => sum + Math.max(0, Number(r.totalAmount || 0) - (policyRefund(r) ?? 0)), 0);
   const summary = {
     eventTitle: listing.title,
     currency: (listing.currency || "USD").toUpperCase(),
@@ -498,10 +556,10 @@ export async function getOrganizerBookings(listingId: string, userId: string) {
     ticketsSold: inventory.sold,
     ticketsAvailable: inventory.left,
     soldOut: inventory.soldOut,
-    revenue: confirmed.reduce((sum, r) => sum + Number(r.totalAmount || 0), 0),
+    revenue: confirmed.reduce((sum, r) => sum + Number(r.totalAmount || 0), 0) + retained,
     refundedAmount: rows
       .filter((r) => r.status === "refunded")
-      .reduce((sum, r) => sum + Number(r.totalAmount || 0), 0),
+      .reduce((sum, r) => sum + (policyRefund(r) ?? Number(r.totalAmount || 0)), 0),
     bookings: confirmed.length,
     checkedIn: confirmed.filter((r) => r.checkedInAt).reduce((sum, r) => sum + r.ticketQuantity, 0),
     pendingWithdrawals: rows.filter((r) => r.status === "withdraw_requested").length,
@@ -537,6 +595,9 @@ export async function requestBookingWithdrawal(input: {
   }
 
   const listing = await Listing.findById(booking.listingId);
+  const policy = bookingPolicy(booking, listing?.extras);
+  if (policy) return cancelUnderPolicy(booking, listing, policy, input.reason);
+
   const isFree = booking.isFree || Number(booking.totalAmount) <= 0;
   booking.status = isFree ? "cancelled" : "withdraw_requested";
   booking.cancelledAt = new Date();
@@ -581,6 +642,124 @@ export async function requestBookingWithdrawal(input: {
   });
 
   return enrichBooking(booking);
+}
+
+function eventStartsAt(listing: ListingDoc | null): Date | null {
+  return listing ? eventStartFromExtras(listing.extras, listing.countryCode) : null;
+}
+
+function moneyLabel(booking: BookingDoc, amount: number) {
+  const fixed = Number.isInteger(amount) ? String(amount) : amount.toFixed(2);
+  return `${booking.currencySymbol || ""}${fixed}`;
+}
+
+/** Guest cancels under the organizer's policy; the refund (if any) is issued right away. */
+async function cancelUnderPolicy(
+  booking: BookingDoc,
+  listing: ListingDoc | null,
+  policy: RefundPolicy,
+  reason?: string,
+) {
+  const quote = quoteRefund(policy, eventStartsAt(listing));
+  if (!quote.allowed) {
+    throw new AppError(
+      400,
+      quote.reason || "This booking can no longer be cancelled",
+      "CANCELLATION_CLOSED",
+    );
+  }
+  const claimed = await EventBooking.findOneAndUpdate(
+    { _id: booking._id, status: "confirmed" },
+    { $set: { status: "withdraw_requested" } },
+    { new: true },
+  );
+  if (!claimed) {
+    throw new AppError(409, "This booking is already being cancelled", "CONFLICT");
+  }
+
+  const paid = !claimed.isFree && Number(claimed.totalAmount) > 0;
+  let refundMinor = 0;
+  try {
+    if (paid && quote.percent > 0) {
+      const payment = claimed.paymentId ? await Payment.findById(claimed.paymentId) : null;
+      if (!payment || payment.status !== "succeeded") {
+        throw new AppError(
+          400,
+          "No completed payment found for this booking",
+          "REFUND_UNAVAILABLE",
+        );
+      }
+      refundMinor = Math.floor((payment.totalMinor * quote.percent) / 100);
+      if (refundMinor > 0) {
+        await refundProviderPayment({
+          provider: payment.provider,
+          providerPaymentId: payment.providerPaymentId || "",
+          amountMinor: refundMinor,
+        });
+        payment.status = "refunded";
+        payment.refundedAt = new Date();
+        payment.metadata = {
+          ...(payment.metadata && typeof payment.metadata === "object"
+            ? (payment.metadata as Record<string, unknown>)
+            : {}),
+          refundedMinor: refundMinor,
+          refundPercent: quote.percent,
+        };
+        await payment.save();
+      }
+    }
+  } catch (err) {
+    await EventBooking.updateOne(
+      { _id: claimed._id, status: "withdraw_requested" },
+      { $set: { status: "confirmed" } },
+    );
+    throw err;
+  }
+
+  const refundAmount = refundMinor / 100;
+  claimed.status = refundMinor > 0 ? "refunded" : "cancelled";
+  claimed.cancelledBy = "attendee";
+  claimed.cancelledAt = new Date();
+  if (refundMinor > 0) claimed.refundedAt = new Date();
+  withMetadata(claimed, {
+    withdrawReason: String(reason || "").trim(),
+    refundPercent: paid ? quote.percent : 0,
+    refundAmount,
+  });
+  await claimed.save();
+  await syncEventInventory(claimed.listingId);
+
+  const title = listing?.title || claimed.eventTitle || "the event";
+  const label = ticketLabel(claimed.ticketQuantity, claimed.ticketTierName || undefined);
+  const refundText = !paid
+    ? ""
+    : refundMinor > 0
+      ? ` A refund of ${moneyLabel(claimed, refundAmount)} (${quote.percent}%) is on its way and may take 5–7 business days.`
+      : " No refund applies at this point under the event's cancellation policy.";
+  const image = absolutizeMediaUrl(
+    Array.isArray(listing?.images) ? String(listing.images[0] || "") : "",
+  );
+  await notify({
+    userId: claimed.userId.toString(),
+    type: "listing",
+    title: "Booking cancelled",
+    body: `Your ${label} for "${title}" ${claimed.ticketQuantity === 1 ? "was" : "were"} cancelled.${refundText}`,
+    href: `/event-tickets/${claimed._id.toString()}`,
+    image,
+  });
+  if (claimed.sellerId.toString() !== claimed.userId.toString()) {
+    await notify({
+      userId: claimed.sellerId.toString(),
+      type: "listing",
+      title: "Tickets cancelled",
+      body: `${claimed.attendeeName || "A guest"} cancelled ${label} for "${title}".${
+        refundMinor > 0 ? ` Refunded ${moneyLabel(claimed, refundAmount)} per your policy.` : ""
+      }`,
+      href: `/events/${claimed.listingId.toString()}/bookings`,
+      image,
+    });
+  }
+  return enrichBooking(claimed);
 }
 
 async function organizerBooking(bookingId: string, userId: string) {
