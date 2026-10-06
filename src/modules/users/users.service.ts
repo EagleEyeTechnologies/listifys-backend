@@ -113,9 +113,10 @@ export function toMeUser(user: InstanceType<typeof User>) {
 
 export async function toPublicUser(user: InstanceType<typeof User>, viewerId?: string) {
   const stats = await getSellerReviewStats(user._id.toString());
+  const isSelf = viewerId === user._id.toString();
   const listingCount = await Listing.countDocuments({
     seller: user._id,
-    status: { $in: ["active", "sold", "paused"] },
+    status: { $in: isSelf ? ["active", "sold", "paused"] : ["active", "sold"] },
   });
   const followerIds = idsOf(user.followers);
   const followingIds = idsOf(user.following);
