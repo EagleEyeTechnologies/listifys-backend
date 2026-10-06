@@ -4,6 +4,7 @@ import { asyncHandler } from "../../utils/asyncHandler.js";
 import { optionalAuth, requireAuth } from "../../middleware/auth.js";
 import { AppError } from "../../utils/AppError.js";
 import { User } from "./user.model.js";
+import { listLoginActivity } from "../auth/loginActivity.js";
 import { browseListings, listMyListings, listQuerySchema } from "../listings/listing.service.js";
 import {
   listConnections,
@@ -44,6 +45,16 @@ usersRouter.get(
       throw new AppError(401, "User not found", "UNAUTHORIZED");
     }
     res.json({ success: true, data: toMeUser(user) });
+  }),
+);
+
+usersRouter.get(
+  "/me/activity",
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const limit = Number(req.query.limit) || 20;
+    const items = await listLoginActivity(req, req.userId!, limit);
+    res.json({ success: true, data: { items } });
   }),
 );
 

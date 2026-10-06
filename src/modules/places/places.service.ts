@@ -6,6 +6,7 @@ import { env } from "../../config/env.js";
 import { kv } from "../../redis/client.js";
 import { AppError } from "../../utils/AppError.js";
 import { logger } from "../../utils/logger.js";
+import { distanceMiles } from "../../utils/geo.js";
 
 const AUTOCOMPLETE_TTL = 12 * 60 * 60;
 const DETAILS_TTL = 30 * 24 * 60 * 60;
@@ -34,6 +35,8 @@ export type PlaceDetails = {
   countryCode: string;
   pincode: string;
   types: string[];
+  /** Browse radius that covers the place itself (a neighbourhood vs. a whole city). */
+  radiusMiles: number;
 };
 
 export type ReverseGeocodeResult = {
@@ -184,6 +187,70 @@ function parseAddressComponents(components: unknown[] = []) {
   };
 }
 
+/** Radius options offered by the browse UIs, smallest first. */
+const BROWSE_RADIUS_STEPS = [2, 5, 10, 25, 50, 100];
+
+type Viewport = {
+  northeast?: { lat?: number; lng?: number };
+  southwest?: { lat?: number; lng?: number };
+};
+
+export function placeRadiusMiles(types: string[], viewport?: Viewport): number {
+  const ne = viewport?.northeast;
+  const sw = viewport?.southwest;
+  if (
+    typeof ne?.lat === "number" &&
+    typeof ne.lng === "number" &&
+    typeof sw?.lat === "number" &&
+    typeof sw.lng === "number"
+  ) {
+    const halfDiagonal = distanceMiles(ne.lat, ne.lng, sw.lat, sw.lng) / 2;
+    return BROWSE_RADIUS_STEPS.find((step) => step >= halfDiagonal) ?? 100;
+  }
+  const has = (t: string) => types.includes(t);
+  if (has("country") || has("administrative_area_level_1")) return 100;
+  if (has("administrative_area_level_2")) return 25;
+  if (has("locality") || has("postal_code")) return 10;
+  return 2;
+}
+
+/** Best-effort pin for a typed address. Null when Maps is not configured or nothing matched. */
+export async function geocodeAddress(
+  address: string,
+  countryCode?: string,
+): Promise<{ lat: number; lng: number } | null> {
+  const text = address.trim();
+  if (text.length < 2 || !getServerKey()) return null;
+  const cc = String(countryCode || "").toLowerCase();
+  const cacheKey = `places:geocode:${cc}:${text.toLowerCase()}`;
+  const cached = await cacheGet<{ lat: number; lng: number } | { miss: true }>(cacheKey);
+  if (cached) return "miss" in cached ? null : cached;
+
+  try {
+    const data = await googleGet("/geocode/json", {
+      address: text,
+      language: "en",
+      ...(cc ? { components: `country:${cc}` } : {}),
+    });
+    const loc = (
+      data.results?.[0]?.geometry as { location?: { lat?: number; lng?: number } } | undefined
+    )?.location;
+    if (data.status !== "OK" || typeof loc?.lat !== "number" || typeof loc.lng !== "number") {
+      await cacheSet(cacheKey, { miss: true }, AUTOCOMPLETE_TTL);
+      return null;
+    }
+    const point = { lat: loc.lat, lng: loc.lng };
+    await cacheSet(cacheKey, point, DETAILS_TTL);
+    return point;
+  } catch (err) {
+    logger.warn("Geocode failed", {
+      address: text,
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return null;
+  }
+}
+
 export async function autocomplete(input: {
   q?: string;
   lat?: string | number;
@@ -256,7 +323,11 @@ export async function placeDetails(input: {
 
   const cacheKey = `places:details:${id}`;
   const cached = await cacheGet<PlaceDetails>(cacheKey);
-  if (cached) return cached;
+  if (cached) {
+    return typeof cached.radiusMiles === "number"
+      ? cached
+      : { ...cached, radiusMiles: placeRadiusMiles(cached.types || []) };
+  }
 
   const params: Record<string, string> = {
     place_id: id,
@@ -275,13 +346,15 @@ export async function placeDetails(input: {
   }
 
   const place = data.result;
-  const geometry = place.geometry as { location?: { lat?: number; lng?: number } } | undefined;
+  const geometry = place.geometry as
+    { location?: { lat?: number; lng?: number }; viewport?: Viewport } | undefined;
   const lat = geometry?.location?.lat;
   const lng = geometry?.location?.lng;
   const parsed = parseAddressComponents(
     Array.isArray(place.address_components) ? (place.address_components as unknown[]) : [],
   );
 
+  const types = Array.isArray(place.types) ? (place.types as string[]) : [];
   const result: PlaceDetails = {
     placeId: String(place.place_id || id),
     name: String(place.name || ""),
@@ -289,7 +362,8 @@ export async function placeDetails(input: {
     lat: typeof lat === "number" ? lat : undefined,
     lng: typeof lng === "number" ? lng : undefined,
     ...parsed,
-    types: Array.isArray(place.types) ? (place.types as string[]) : [],
+    types,
+    radiusMiles: placeRadiusMiles(types, geometry?.viewport),
   };
 
   await cacheSet(cacheKey, result, DETAILS_TTL);

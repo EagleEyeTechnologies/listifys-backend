@@ -38,11 +38,59 @@ async function sendReportEmail(to: string[], subject: string, text: string) {
   logger.info("Report email accepted", { subject, recipients: recipients.length });
 }
 
+/** Tell the seller their listing is under review. The reporter stays anonymous. */
+async function notifyListingOwner(input: {
+  ownerId: string;
+  listingId: string;
+  listingTitle: string;
+  reason: string;
+}) {
+  // One heads-up per listing per day, however many people report it.
+  const since = new Date(Date.now() - 24 * 60 * 60 * 1000);
+  const recent = await ModerationReport.countDocuments({
+    listingId: new mongoose.Types.ObjectId(input.listingId),
+    type: { $in: ["listing", "image"] },
+    source: "user_report",
+    createdAt: { $gte: since },
+  });
+  if (recent > 1) return;
+
+  const title = "Your listing was reported";
+  const body = `Your listing “${input.listingTitle}” was reported for “${input.reason}”. Our team will review it — it stays live unless it breaks our policies. You can edit it from My Listings if anything needs fixing.`;
+
+  try {
+    await createNotification({
+      userId: input.ownerId,
+      type: "listing",
+      title,
+      body,
+      href: "/profile?tab=listings",
+    });
+    getIo()?.to(`user:${input.ownerId}`).emit("notification:new", { title, body });
+  } catch (err) {
+    logger.warn("Failed to notify owner about listing report", {
+      err: err instanceof Error ? err.message : String(err),
+    });
+  }
+
+  try {
+    const owner = await User.findById(input.ownerId).select("email isActive");
+    if (owner?.email && owner.isActive !== false) {
+      await sendReportEmail([owner.email], `[Listifys] ${title}`, body);
+    }
+  } catch (err) {
+    logger.warn("Failed to email owner about listing report", {
+      err: err instanceof Error ? err.message : String(err),
+    });
+  }
+}
+
 async function notifyReportSubmitted(input: {
   reportId: string;
   type: string;
   subject: string;
   reason: string;
+  details?: string;
   reporterName: string;
   reporterId: string;
   reporterEmail?: string;
@@ -120,6 +168,7 @@ async function notifyReportSubmitted(input: {
         `Type: ${input.type}`,
         `Subject: ${input.subject}`,
         `Reason: ${input.reason}`,
+        ...(input.details ? [`Details: ${input.details}`] : []),
         `Reporter: ${input.reporterName}`,
       ].join("\n"),
     );
@@ -135,7 +184,7 @@ export const createUserReportSchema = z.object({
   targetId: z.string().min(1),
   reason: z.string().min(3).max(500),
   imageUrl: z.string().optional(),
-  notes: z.string().max(2000).optional(),
+  details: z.string().trim().max(1000).optional(),
 });
 
 function priorityFromReason(reason: string): "high" | "medium" | "low" {
@@ -267,7 +316,7 @@ export async function createUserReport(
     reporterId: reporter._id,
     reporterName,
     reason: input.reason.trim(),
-    notes: input.notes || "",
+    details: input.details || "",
     status: "open",
     priority: priorityFromReason(input.reason),
     source: "user_report",
@@ -278,10 +327,20 @@ export async function createUserReport(
     type,
     subject,
     reason: input.reason.trim(),
+    details: input.details || undefined,
     reporterName,
     reporterId,
     reporterEmail: reporter.email || undefined,
   });
+
+  if ((type === "listing" || type === "image") && listingId && userId) {
+    await notifyListingOwner({
+      ownerId: userId.toString(),
+      listingId: listingId.toString(),
+      listingTitle: subject,
+      reason: input.reason.trim(),
+    });
+  }
 
   return { id: doc._id.toString(), status: doc.status, duplicate: false };
 }

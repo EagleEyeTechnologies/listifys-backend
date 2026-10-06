@@ -206,7 +206,7 @@ export async function listModerationReports(query: z.infer<typeof moderationQuer
   }
   if (query.q?.trim()) {
     const rx = new RegExp(query.q.trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
-    filter.$or = [{ subject: rx }, { reason: rx }, { reporterName: rx }];
+    filter.$or = [{ subject: rx }, { reason: rx }, { details: rx }, { reporterName: rx }];
   }
   const skip = (query.page - 1) * query.limit;
   const [total, rows] = await Promise.all([
@@ -221,6 +221,7 @@ export async function listModerationReports(query: z.infer<typeof moderationQuer
       subject: r.subject,
       reporter: r.reporterName || "—",
       reason: r.reason,
+      details: r.details || "",
       listingId: r.listingId ? String(r.listingId) : "",
       userId: r.userId ? String(r.userId) : "",
       reviewId: r.reviewId ? String(r.reviewId) : "",

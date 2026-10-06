@@ -119,6 +119,18 @@ export const kv = {
     }
     memorySet(key, value, ttlSeconds);
   },
+  /** Atomic SET NX with expiry; true when this caller created the key (a short-lived lock). */
+  async setIfAbsent(key: string, value: string, ttlSeconds: number): Promise<boolean> {
+    if (backend === "upstash" && upstash) {
+      return (await upstash.set(key, value, { nx: true, ex: ttlSeconds })) !== null;
+    }
+    if (backend === "ioredis" && redis) {
+      return (await redis.set(key, value, "EX", ttlSeconds, "NX")) === "OK";
+    }
+    if (memoryGet(key) !== null) return false;
+    memorySet(key, value, ttlSeconds);
+    return true;
+  },
   async del(key: string): Promise<void> {
     if (backend === "upstash" && upstash) {
       await upstash.del(key);

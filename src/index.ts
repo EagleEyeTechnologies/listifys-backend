@@ -2,7 +2,7 @@ import { createApp } from "./app.js";
 import { env } from "./config/env.js";
 import { connectMongo } from "./db/mongo.js";
 import { connectRedis, redisBackend } from "./redis/client.js";
-import { connectElasticsearch } from "./modules/search/search.service.js";
+import { connectSearch, searchReady } from "./modules/search/search.service.js";
 import { initQueues } from "./queues/listingQueue.js";
 import { initSocket } from "./modules/chat/socket.js";
 import { initFcm, fcmReady } from "./modules/notifications/fcm.service.js";
@@ -13,7 +13,7 @@ async function main() {
   await connectMongo();
   await connectRedis();
   initQueues();
-  await connectElasticsearch();
+  await connectSearch();
   initFcm();
 
   const app = createApp();
@@ -28,7 +28,7 @@ async function main() {
       redis: redisBackend(),
       fcm: fcmReady(),
       s3: Boolean(env.AWS_S3_BUCKET_NAME && env.AWS_ACCESS_KEY_ID),
-      elasticsearch: Boolean(env.ELASTICSEARCH_URL),
+      meilisearch: searchReady(),
     });
   });
 }

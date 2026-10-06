@@ -28,6 +28,8 @@ const moderationReportSchema = new Schema(
     reporterId: { type: Schema.Types.ObjectId, ref: "User" },
     reporterName: { type: String, default: "" },
     reason: { type: String, required: true, trim: true, maxlength: 500 },
+    /** Reporter's own explanation. `notes` is reserved for moderators. */
+    details: { type: String, default: "", trim: true, maxlength: 1000 },
     status: {
       type: String,
       enum: ["open", "reviewing", "resolved", "dismissed"],
