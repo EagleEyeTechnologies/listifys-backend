@@ -4,7 +4,6 @@ import { asyncHandler } from "../../utils/asyncHandler.js";
 import { requireAuth } from "../../middleware/auth.js";
 import { AppError } from "../../utils/AppError.js";
 import { env } from "../../config/env.js";
-import { Listing } from "../listings/listing.model.js";
 import {
   confirmFreeBooking,
   createPendingTicketCheckout,
@@ -12,6 +11,10 @@ import {
   getBookingForUser,
   getMyBookings,
   getOrganizerBookings,
+  organizerCancelBooking,
+  organizerCheckIn,
+  organizerResolveWithdrawal,
+  quoteTickets,
   requestBookingWithdrawal,
   serializeBooking,
 } from "./eventTickets.service.js";
@@ -29,6 +32,7 @@ export const eventTicketsRouter = Router();
 
 const bookSchema = z.object({
   ticketQuantity: z.coerce.number().int().min(1).max(50),
+  ticketTierId: z.string().max(80).optional(),
   attendeeName: z.string().max(120).optional(),
   attendeePhone: z.string().max(40).optional(),
   notes: z.string().max(500).optional(),
@@ -137,8 +141,56 @@ eventTicketsRouter.get(
   "/:listingId/bookings",
   requireAuth,
   asyncHandler(async (req, res) => {
-    const items = await getOrganizerBookings(String(req.params.listingId), String(req.userId));
-    res.json({ success: true, data: { items } });
+    const data = await getOrganizerBookings(String(req.params.listingId), String(req.userId));
+    res.json({ success: true, data });
+  }),
+);
+
+const organizerNoteSchema = z.object({ reason: z.string().max(500).optional() });
+
+eventTicketsRouter.post(
+  "/organizer/bookings/:bookingId/cancel",
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const body = organizerNoteSchema.safeParse(req.body || {});
+    if (!body.success) throw new AppError(400, "Invalid payload", "VALIDATION_ERROR");
+    const data = await organizerCancelBooking({
+      userId: String(req.userId),
+      bookingId: String(req.params.bookingId),
+      reason: body.data.reason,
+    });
+    res.json({ success: true, data });
+  }),
+);
+
+eventTicketsRouter.post(
+  "/organizer/bookings/:bookingId/withdrawal",
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const body = z
+      .object({ approve: z.boolean(), note: z.string().max(500).optional() })
+      .safeParse(req.body);
+    if (!body.success) throw new AppError(400, "Invalid payload", "VALIDATION_ERROR");
+    const data = await organizerResolveWithdrawal({
+      userId: String(req.userId),
+      bookingId: String(req.params.bookingId),
+      approve: body.data.approve,
+      note: body.data.note,
+    });
+    res.json({ success: true, data });
+  }),
+);
+
+eventTicketsRouter.post(
+  "/organizer/bookings/:bookingId/check-in",
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const data = await organizerCheckIn({
+      userId: String(req.userId),
+      bookingId: String(req.params.bookingId),
+      undo: Boolean(req.body?.undo),
+    });
+    res.json({ success: true, data });
   }),
 );
 
@@ -176,14 +228,11 @@ eventTicketsRouter.post(
     }
 
     const listingId = String(req.params.listingId);
-    const listing = await Listing.findById(listingId).select(
-      "price category status currency countryCode",
-    );
-    if (!listing || listing.category !== "events" || listing.status === "removed") {
-      throw new AppError(404, "Event listing not found", "NOT_FOUND");
-    }
+    const qty = parsed.data.ticketQuantity;
+    const quote = await quoteTickets(listingId, parsed.data.ticketTierId, qty);
+    const listing = quote.listing;
 
-    if (Number(listing.price || 0) <= 0) {
+    if (quote.unitPrice <= 0) {
       const result = await confirmFreeBooking({
         userId: String(req.userId),
         listingId,
@@ -208,8 +257,7 @@ eventTicketsRouter.post(
       );
     }
 
-    const qty = parsed.data.ticketQuantity;
-    const amountMinor = Math.round(Number(listing.price) * qty * 100);
+    const amountMinor = Math.round(quote.totalMajor * 100);
     const currency = (listing.currency || "USD").toUpperCase();
 
     if (cfg.provider === "razorpay") {
@@ -227,6 +275,7 @@ eventTicketsRouter.post(
         userId: String(req.userId),
         listingId,
         ticketQuantity: qty,
+        ticketTierId: parsed.data.ticketTierId,
         attendeeName: parsed.data.attendeeName,
         attendeePhone: parsed.data.attendeePhone,
         notes: parsed.data.notes,
@@ -270,6 +319,7 @@ eventTicketsRouter.post(
       userId: String(req.userId),
       listingId,
       ticketQuantity: qty,
+      ticketTierId: parsed.data.ticketTierId,
       attendeeName: parsed.data.attendeeName,
       attendeePhone: parsed.data.attendeePhone,
       notes: parsed.data.notes,

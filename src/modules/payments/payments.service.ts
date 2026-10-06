@@ -92,3 +92,63 @@ export async function createStripePaymentIntent(input: {
   }
   return (await res.json()) as { id: string; client_secret: string };
 }
+
+/** Full refund of a captured payment. `providerPaymentId` is Razorpay `pay_…` or Stripe `pi_…`. */
+export async function refundProviderPayment(input: {
+  provider: string;
+  providerPaymentId: string;
+  amountMinor: number;
+}) {
+  if (!input.providerPaymentId) {
+    throw new AppError(
+      400,
+      "This payment has no provider reference to refund",
+      "REFUND_UNAVAILABLE",
+    );
+  }
+  if (input.provider === "razorpay") {
+    if (!env.RAZORPAY_KEY_ID || !env.RAZORPAY_KEY_SECRET) {
+      throw new AppError(503, "Razorpay not configured", "PAYMENTS_UNAVAILABLE");
+    }
+    const auth = Buffer.from(`${env.RAZORPAY_KEY_ID}:${env.RAZORPAY_KEY_SECRET}`).toString(
+      "base64",
+    );
+    const res = await fetch(
+      `https://api.razorpay.com/v1/payments/${encodeURIComponent(input.providerPaymentId)}/refund`,
+      {
+        method: "POST",
+        headers: { Authorization: `Basic ${auth}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ amount: input.amountMinor }),
+      },
+    );
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      logger.error("Razorpay refund failed", { status: res.status, text });
+      throw new AppError(502, "Refund failed at Razorpay. Try again later.", "REFUND_FAILED");
+    }
+    return (await res.json()) as { id: string };
+  }
+  if (input.provider === "stripe") {
+    if (!env.STRIPE_SECRET_KEY) {
+      throw new AppError(503, "Stripe not configured", "PAYMENTS_UNAVAILABLE");
+    }
+    const params = new URLSearchParams();
+    params.set("payment_intent", input.providerPaymentId);
+    params.set("amount", String(input.amountMinor));
+    const res = await fetch("https://api.stripe.com/v1/refunds", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${env.STRIPE_SECRET_KEY}`,
+        "Content-Type": "application/x-www-form-urlencoded",
+      },
+      body: params.toString(),
+    });
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      logger.error("Stripe refund failed", { status: res.status, text });
+      throw new AppError(502, "Refund failed at Stripe. Try again later.", "REFUND_FAILED");
+    }
+    return (await res.json()) as { id: string };
+  }
+  throw new AppError(400, "Refunds are not supported for this payment", "REFUND_UNAVAILABLE");
+}

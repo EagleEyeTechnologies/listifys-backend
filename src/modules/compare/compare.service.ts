@@ -59,7 +59,7 @@ export async function listCompare(userId: string) {
     objectIds.length > 0
       ? await Listing.find({
           _id: { $in: objectIds },
-          status: { $ne: "removed" },
+          $or: [{ status: { $nin: ["removed", "paused"] } }, { status: "paused", seller: userId }],
         })
       : [];
   const byId = new Map(rows.map((r) => [r._id.toString(), r]));

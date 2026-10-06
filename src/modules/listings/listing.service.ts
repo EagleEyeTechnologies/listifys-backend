@@ -16,8 +16,8 @@ import { isMongoObjectId, listingSlugFrom } from "../../utils/slug.js";
 import { absolutizeMediaUrl } from "../../utils/mediaUrl.js";
 import { hiddenSellerIds, isEitherBlocked } from "../users/users.service.js";
 import { kv } from "../../redis/client.js";
-import { EventBooking } from "../event-tickets/eventBooking.model.js";
 import { isEventPastFromExtras } from "../event-tickets/eventDate.js";
+import { computeInventory, syncEventInventory } from "../event-tickets/eventInventory.js";
 
 const LISTINGS_CACHE_VER = "listings:catalog-ver";
 const LISTINGS_CACHE_TTL = 90;
@@ -174,7 +174,7 @@ function toPublic(doc: InstanceType<typeof Listing>) {
     condition: obj.condition,
     images,
     image: images[0] || "",
-    video: typeof obj.video === "string" ? obj.video : "",
+    video: typeof obj.video === "string" ? absolutizeMediaUrl(obj.video) : "",
     location: obj.location,
     city: obj.city,
     lat: coords?.[1],
@@ -226,6 +226,11 @@ export async function createListing(
         ? { type: "Point", coordinates: [input.lng, input.lat] }
         : undefined,
   });
+  if (listing.category === "events") {
+    await syncEventInventory(listing._id);
+    const synced = await Listing.findById(listing._id);
+    if (synced) listing.set(synced.toObject());
+  }
 
   try {
     await indexListing(listing);
@@ -294,6 +299,9 @@ export async function getListingById(idOrSlug: string, viewerId?: string, anonVi
     await listing.save();
     void invalidateListingsCache();
   }
+  if (listing.status === "paused" && viewerId !== listing.seller.toString()) {
+    throw new AppError(404, "Listing not found", "NOT_FOUND");
+  }
   if (viewerId && (await isEitherBlocked(viewerId, listing.seller.toString()))) {
     throw new AppError(404, "Listing not found", "NOT_FOUND");
   }
@@ -321,15 +329,7 @@ export async function getListingById(idOrSlug: string, viewerId?: string, anonVi
   if (!updated) throw new AppError(404, "Listing not found", "NOT_FOUND");
   const payload = toPublic(updated);
   if (payload.category === "events") {
-    const [row] = await EventBooking.aggregate<{ sold: number }>([
-      {
-        $match: {
-          listingId: updated._id,
-          status: { $in: ["confirmed", "withdraw_requested"] },
-        },
-      },
-      { $group: { _id: null, sold: { $sum: "$ticketQuantity" } } },
-    ]);
+    const inventory = await computeInventory(updated);
     const extras =
       payload.extras && typeof payload.extras === "object"
         ? { ...(payload.extras as Record<string, unknown>) }
@@ -338,7 +338,16 @@ export async function getListingById(idOrSlug: string, viewerId?: string, anonVi
       extras.event && typeof extras.event === "object"
         ? { ...(extras.event as Record<string, unknown>) }
         : {};
-    event.ticketsSold = Number(row?.sold || 0);
+    event.ticketsSold = inventory.sold;
+    event.ticketsAvailable = inventory.left ?? 0;
+    event.soldOut = inventory.soldOut;
+    if (inventory.total != null) event.ticketsTotal = inventory.total;
+    if (Array.isArray(event.tickets)) {
+      event.tickets = (event.tickets as Record<string, unknown>[]).map((t, i) => {
+        const inv = inventory.tiers[i];
+        return inv ? { ...t, id: inv.id, sold: inv.sold, left: inv.left } : t;
+      });
+    }
     extras.event = event;
     payload.extras = extras;
   }
@@ -393,13 +402,17 @@ export async function updateListing(
     };
   }
 
-  const updated = await Listing.findOneAndUpdate(
+  let updated = await Listing.findOneAndUpdate(
     { _id: listing._id, seller: sellerId, status: { $ne: "removed" } },
     { $set },
     { new: true },
   );
   if (!updated) {
     throw new AppError(404, "Listing not found", "NOT_FOUND");
+  }
+  if (updated.category === "events" && input.extras) {
+    await syncEventInventory(updated._id);
+    updated = (await Listing.findById(updated._id)) || updated;
   }
   try {
     await indexListing(updated);
@@ -533,8 +546,9 @@ async function browseListingsUncached(
   viewerId?: string,
 ) {
   await sweepEndedEvents();
+  const viewingOwnListings = Boolean(viewerId) && query.sellerId === viewerId;
   const filter: Record<string, unknown> = {
-    status: query.status || "active",
+    status: viewingOwnListings ? query.status || "active" : "active",
   };
   // Seller public profile: show all markets for that seller (don't hide by browse country)
   if (query.sellerId && mongoose.isValidObjectId(query.sellerId)) {
