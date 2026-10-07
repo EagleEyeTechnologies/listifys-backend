@@ -7,7 +7,7 @@ import { Conversation } from "../chat/conversation.model.js";
 import { SellerReview } from "../reviews/sellerReview.model.js";
 import { ModerationReport } from "../admin/moderationReport.model.js";
 import { createNotification } from "../notifications/notification.service.js";
-import { env, getAdminEmails } from "../../config/env.js";
+import { env } from "../../config/env.js";
 import { logger } from "../../utils/logger.js";
 import { getIo } from "../chat/socket.js";
 import { renderNoticeEmail } from "../mail/brandedEmail.js";
@@ -38,68 +38,73 @@ async function sendReportEmail(to: string[], subject: string, text: string) {
   logger.info("Report email accepted", { subject, recipients: recipients.length });
 }
 
-/** Tell the seller their listing is under review. The reporter stays anonymous. */
-async function notifyListingOwner(input: {
-  ownerId: string;
-  listingId: string;
-  listingTitle: string;
+/**
+ * Tell the reported seller (about their listing or their profile). The reporter stays anonymous,
+ * and they hear about each target at most once a day however many people report it.
+ */
+async function notifyReportedParty(input: {
+  recipientId: string;
+  target: "listing" | "profile";
+  /** Reports on the same target in the last day, including this one. */
+  recentFilter: Record<string, unknown>;
+  listingTitle?: string;
   reason: string;
+  href: string;
 }) {
-  // One heads-up per listing per day, however many people report it.
   const since = new Date(Date.now() - 24 * 60 * 60 * 1000);
   const recent = await ModerationReport.countDocuments({
-    listingId: new mongoose.Types.ObjectId(input.listingId),
-    type: { $in: ["listing", "image"] },
+    ...input.recentFilter,
     source: "user_report",
     createdAt: { $gte: since },
   });
   if (recent > 1) return;
 
-  const title = "Your listing was reported";
-  const body = `Your listing “${input.listingTitle}” was reported for “${input.reason}”. Our team will review it — it stays live unless it breaks our policies. You can edit it from My Listings if anything needs fixing.`;
+  const title =
+    input.target === "listing" ? "Your listing was reported" : "Your profile was reported";
+  const body =
+    input.target === "listing"
+      ? `Your listing “${input.listingTitle || "Listing"}” was reported for “${input.reason}”. Our team will review it — it stays live unless it breaks our policies. You can edit it from My Listings if anything needs fixing.`
+      : `Someone reported your profile for “${input.reason}”. Our team will review it — your account stays active unless it breaks our policies.`;
 
   try {
     await createNotification({
-      userId: input.ownerId,
-      type: "listing",
+      userId: input.recipientId,
+      type: input.target === "listing" ? "listing" : "system",
       title,
       body,
-      href: "/profile?tab=listings",
+      href: input.href,
     });
-    getIo()?.to(`user:${input.ownerId}`).emit("notification:new", { title, body });
+    getIo()?.to(`user:${input.recipientId}`).emit("notification:new", { title, body });
   } catch (err) {
-    logger.warn("Failed to notify owner about listing report", {
+    logger.warn("Failed to notify reported user", {
       err: err instanceof Error ? err.message : String(err),
     });
   }
 
   try {
-    const owner = await User.findById(input.ownerId).select("email isActive");
-    if (owner?.email && owner.isActive !== false) {
-      await sendReportEmail([owner.email], `[Listifys] ${title}`, body);
+    const recipient = await User.findById(input.recipientId).select("email isActive");
+    if (recipient?.email && recipient.isActive !== false) {
+      await sendReportEmail([recipient.email], `[Listifys] ${title}`, body);
     }
   } catch (err) {
-    logger.warn("Failed to email owner about listing report", {
+    logger.warn("Failed to email reported user", {
       err: err instanceof Error ? err.message : String(err),
     });
   }
 }
 
+/** Confirm the report to the person who filed it. Moderators work from the admin panel queue. */
 async function notifyReportSubmitted(input: {
   reportId: string;
-  type: string;
   subject: string;
   reason: string;
-  details?: string;
-  reporterName: string;
   reporterId: string;
   reporterEmail?: string;
-  duplicate?: boolean;
+  /** Page of the reported listing, profile, or chat. */
+  targetHref: string;
 }) {
-  const body = input.duplicate
-    ? `Your report on “${input.subject}” was already on file. Our team is still reviewing it.`
-    : `Thanks — we received your report on “${input.subject}” (${input.reason}). Our team will review it.`;
-  const title = input.duplicate ? "Report already submitted" : "Report received";
+  const body = `Thanks — we received your report on “${input.subject}” (${input.reason}). Our team will review it.`;
+  const title = "Report received";
 
   try {
     await createNotification({
@@ -107,7 +112,7 @@ async function notifyReportSubmitted(input: {
       type: "system",
       title,
       body,
-      href: "/notifications",
+      href: input.targetHref,
     });
     getIo()?.to(`user:${input.reporterId}`).emit("notification:new", { title, body });
   } catch (err) {
@@ -128,54 +133,6 @@ async function notifyReportSubmitted(input: {
         err: err instanceof Error ? err.message : String(err),
       });
     }
-  }
-
-  const adminEmails = getAdminEmails();
-  if (!adminEmails.length) return;
-
-  const admins = await User.find({
-    email: { $in: adminEmails },
-    isActive: { $ne: false },
-  }).select("_id email");
-
-  const adminBody = `${input.reporterName} reported ${input.type} “${input.subject}”: ${input.reason}`;
-  for (const admin of admins) {
-    try {
-      await createNotification({
-        userId: admin._id.toString(),
-        type: "system",
-        title: input.duplicate ? "Duplicate user report" : "New user report",
-        body: adminBody,
-        href: "/admin/moderation",
-      });
-      getIo()?.to(`user:${admin._id.toString()}`).emit("notification:new", {
-        title: "New user report",
-        body: adminBody,
-      });
-    } catch {
-      /* best-effort */
-    }
-  }
-
-  if (input.duplicate) return;
-
-  try {
-    await sendReportEmail(
-      adminEmails,
-      `[Listifys] New ${input.type} report: ${input.subject}`,
-      [
-        `Report ID: ${input.reportId}`,
-        `Type: ${input.type}`,
-        `Subject: ${input.subject}`,
-        `Reason: ${input.reason}`,
-        ...(input.details ? [`Details: ${input.details}`] : []),
-        `Reporter: ${input.reporterName}`,
-      ].join("\n"),
-    );
-  } catch (err) {
-    logger.warn("Failed to email admins about report", {
-      err: err instanceof Error ? err.message : String(err),
-    });
   }
 }
 
@@ -198,6 +155,34 @@ function priorityFromReason(reason: string): "high" | "medium" | "low" {
   return "medium";
 }
 
+/** A reporter's report on a target stays "already reported" until moderators close it. */
+function findOpenReport(
+  reporterId: string,
+  type: z.infer<typeof createUserReportSchema>["type"],
+  targetId: string,
+) {
+  return ModerationReport.findOne({
+    type,
+    subjectId: new mongoose.Types.ObjectId(targetId),
+    reporterId: new mongoose.Types.ObjectId(reporterId),
+    status: { $in: ["open", "reviewing"] },
+  });
+}
+
+export const reportStatusQuerySchema = z.object({
+  type: createUserReportSchema.shape.type,
+  targetId: z.string().min(1),
+});
+
+export async function getUserReportStatus(
+  reporterId: string,
+  query: z.infer<typeof reportStatusQuerySchema>,
+) {
+  if (!mongoose.isValidObjectId(query.targetId)) return { reported: false };
+  const existing = await findOpenReport(reporterId, query.type, query.targetId);
+  return { reported: Boolean(existing) };
+}
+
 export async function createUserReport(
   reporterId: string,
   input: z.infer<typeof createUserReportSchema>,
@@ -216,10 +201,13 @@ export async function createUserReport(
   let conversationId: mongoose.Types.ObjectId | undefined;
   let reviewId: mongoose.Types.ObjectId | undefined;
   let imageUrl = input.imageUrl || "";
+  let targetHref = "/notifications";
   const type = input.type;
 
   if (input.type === "listing" || input.type === "image") {
-    const listing = await Listing.findById(input.targetId).select("title seller images status");
+    const listing = await Listing.findById(input.targetId).select(
+      "title seller images status slug",
+    );
     if (!listing) throw new AppError(404, "Listing not found", "NOT_FOUND");
     if (String(listing.seller) === String(reporterId)) {
       throw new AppError(400, "You cannot report your own listing", "VALIDATION_ERROR");
@@ -227,19 +215,21 @@ export async function createUserReport(
     subject = listing.title || "Listing";
     listingId = listing._id;
     userId = listing.seller as mongoose.Types.ObjectId;
+    targetHref = `/listing/${listing.slug || listing._id.toString()}`;
     if (input.type === "image") {
       imageUrl =
         imageUrl ||
         (Array.isArray(listing.images) && listing.images[0] ? String(listing.images[0]) : "");
     }
   } else if (input.type === "user") {
-    const user = await User.findById(input.targetId).select("name email");
+    const user = await User.findById(input.targetId).select("name email slug");
     if (!user) throw new AppError(404, "User not found", "NOT_FOUND");
     if (String(user._id) === String(reporterId)) {
       throw new AppError(400, "You cannot report yourself", "VALIDATION_ERROR");
     }
     subject = user.name || user.email || "User";
     userId = user._id;
+    targetHref = `/sellerprofile/${user.slug || user._id.toString()}`;
   } else if (input.type === "chat") {
     const convo = await Conversation.findById(input.targetId).select(
       "listingTitle participants listingId",
@@ -251,11 +241,12 @@ export async function createUserReport(
     }
     subject = convo.listingTitle || "Conversation";
     conversationId = convo._id;
+    targetHref = `/messages?c=${convo._id.toString()}`;
     if (convo.listingId) listingId = convo.listingId as mongoose.Types.ObjectId;
   } else if (input.type === "review") {
     const review = await SellerReview.findById(input.targetId)
       .populate("reviewer", "name email")
-      .populate("seller", "name email");
+      .populate("seller", "name email slug");
     if (!review) throw new AppError(404, "Review not found", "NOT_FOUND");
     if (String(review.reviewer) === String(reporterId)) {
       throw new AppError(400, "You cannot report your own review", "VALIDATION_ERROR");
@@ -264,11 +255,14 @@ export async function createUserReport(
     subject = `Review by ${reviewer?.name || reviewer?.email || "user"}`;
     reviewId = review._id;
     const sellerRaw = review.seller as unknown;
+    let sellerSlug = "";
     if (sellerRaw && typeof sellerRaw === "object" && "_id" in (sellerRaw as object)) {
       userId = (sellerRaw as { _id: mongoose.Types.ObjectId })._id;
+      sellerSlug = (sellerRaw as { slug?: string }).slug || "";
     } else if (sellerRaw) {
       userId = sellerRaw as mongoose.Types.ObjectId;
     }
+    if (userId) targetHref = `/sellerprofile/${sellerSlug || userId.toString()}?tab=reviews`;
     if (review.listing) listingId = review.listing as mongoose.Types.ObjectId;
     // Mark review flagged so it surfaces in admin reviews too
     if (review.status === "published") {
@@ -277,26 +271,8 @@ export async function createUserReport(
     }
   }
 
-  // Deduplicate open reports from same reporter on same target within 24h
-  const since = new Date(Date.now() - 24 * 60 * 60 * 1000);
-  const existing = await ModerationReport.findOne({
-    type,
-    subjectId: new mongoose.Types.ObjectId(input.targetId),
-    reporterId: new mongoose.Types.ObjectId(reporterId),
-    status: { $in: ["open", "reviewing"] },
-    createdAt: { $gte: since },
-  });
+  const existing = await findOpenReport(reporterId, type, input.targetId);
   if (existing) {
-    await notifyReportSubmitted({
-      reportId: existing._id.toString(),
-      type,
-      subject: existing.subject || subject || "Report",
-      reason: existing.reason || input.reason.trim(),
-      reporterName,
-      reporterId,
-      reporterEmail: reporter.email || undefined,
-      duplicate: true,
-    });
     return {
       id: existing._id.toString(),
       status: existing.status,
@@ -324,21 +300,29 @@ export async function createUserReport(
 
   await notifyReportSubmitted({
     reportId: doc._id.toString(),
-    type,
     subject,
     reason: input.reason.trim(),
-    details: input.details || undefined,
-    reporterName,
     reporterId,
     reporterEmail: reporter.email || undefined,
+    targetHref,
   });
 
   if ((type === "listing" || type === "image") && listingId && userId) {
-    await notifyListingOwner({
-      ownerId: userId.toString(),
-      listingId: listingId.toString(),
+    await notifyReportedParty({
+      recipientId: userId.toString(),
+      target: "listing",
+      recentFilter: { listingId, type: { $in: ["listing", "image"] } },
       listingTitle: subject,
       reason: input.reason.trim(),
+      href: targetHref,
+    });
+  } else if (type === "user" && userId) {
+    await notifyReportedParty({
+      recipientId: userId.toString(),
+      target: "profile",
+      recentFilter: { userId, type: "user" },
+      reason: input.reason.trim(),
+      href: targetHref,
     });
   }
 

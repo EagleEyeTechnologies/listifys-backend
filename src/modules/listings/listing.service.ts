@@ -160,6 +160,8 @@ export const listQuerySchema = z.object({
   /** Most specific name of the place being browsed (e.g. "Uppal"); matches ads without a map pin. */
   place: z.string().max(120).optional(),
   q: z.string().optional(),
+  /** Jobs by this company (case-insensitive); ads without a company name match the poster's name. */
+  company: z.string().trim().max(200).optional(),
   status: z.enum(["active", "sold", "paused", "expired", "removed"]).optional().default("active"),
   lat: z.coerce.number().optional(),
   lng: z.coerce.number().optional(),
@@ -545,6 +547,61 @@ export async function countListingsByCategory(countryCode: "US" | "CA" | "IN") {
   return counts;
 }
 
+/** Companies with the most active job ads in a market, named the same way the jobs filter matches. */
+export async function topHiringCompanies(
+  countryCode: "US" | "CA" | "IN",
+  viewerId?: string,
+  limit = 5,
+) {
+  const hidden = await hiddenSellerIds(viewerId);
+  const match: Record<string, unknown> = { status: "active", countryCode, category: "jobs" };
+  if (hidden.length) match.seller = { $nin: hidden };
+  const rows = await Listing.aggregate<{
+    name: string;
+    jobs: number;
+    image?: string;
+    sellerAvatar?: string;
+  }>([
+    { $match: match },
+    { $sort: { createdAt: -1 } },
+    {
+      $addFields: {
+        company: {
+          $trim: { input: { $toString: { $ifNull: ["$extras.job.companyName", ""] } } },
+        },
+      },
+    },
+    {
+      $addFields: {
+        company: {
+          $cond: [
+            { $eq: ["$company", ""] },
+            { $trim: { input: { $ifNull: ["$sellerName", ""] } } },
+            "$company",
+          ],
+        },
+      },
+    },
+    { $match: { company: { $ne: "" } } },
+    {
+      $group: {
+        _id: { $toLower: "$company" },
+        name: { $first: "$company" },
+        jobs: { $sum: 1 },
+        image: { $first: { $arrayElemAt: ["$images", 0] } },
+        sellerAvatar: { $first: "$sellerAvatar" },
+      },
+    },
+    { $sort: { jobs: -1, name: 1 } },
+    { $limit: Math.min(Math.max(limit, 1), 20) },
+  ]);
+  return rows.map((row) => ({
+    name: row.name,
+    jobs: row.jobs,
+    image: absolutizeMediaUrl(row.image || row.sellerAvatar || ""),
+  }));
+}
+
 export async function listMyListings(sellerId: string) {
   await sweepEndedEvents();
   const rows = await Listing.find({
@@ -612,10 +669,13 @@ const KEYWORD_SYNONYMS: Record<string, string[]> = {
   notebook: ["laptop"],
 };
 
-/** Short words ("tv") must start a word, or they match inside unrelated ones. */
+/**
+ * Short words ("tv") must start a word, or they match inside unrelated ones.
+ * Longer words may have spaces or dashes between letters, so "blackshirt" finds "Black Shirt".
+ */
 function keywordPattern(form: string) {
-  const escaped = escapeRegex(form);
-  return form.length <= 3 ? `\\b${escaped}` : escaped;
+  if (form.length <= 3) return `\\b${escapeRegex(form)}`;
+  return [...form].map(escapeRegex).join("[^a-z0-9]{0,3}");
 }
 
 /** Every word must match a title, description, category, place, color, or brand. */
@@ -665,6 +725,102 @@ async function applyKeywordSearch(
     return;
   }
   filter.$and = [...existing, ...clauses];
+}
+
+const SALARY_PERIOD_FACTOR: Record<string, number> = {
+  hour: 2080,
+  day: 260,
+  week: 52,
+  month: 12,
+  year: 1,
+};
+
+function salaryPeriodFactor(raw: unknown) {
+  const text = String(raw || "").toLowerCase();
+  if (/\b(month|monthly|mo|pm)\b/.test(text)) return SALARY_PERIOD_FACTOR.month!;
+  if (/\b(week|weekly|wk)\b/.test(text)) return SALARY_PERIOD_FACTOR.week!;
+  if (/\b(day|daily)\b/.test(text)) return SALARY_PERIOD_FACTOR.day!;
+  if (/\b(hour|hourly|hr)\b/.test(text)) return SALARY_PERIOD_FACTOR.hour!;
+  return 1;
+}
+
+function positiveAmount(raw: unknown) {
+  const n = typeof raw === "number" ? raw : Number(String(raw ?? "").replace(/[^\d.]/g, ""));
+  return Number.isFinite(n) && n > 0 ? n : 0;
+}
+
+/**
+ * Lowest and highest amount a listing asks for or pays. Salaries are yearly so monthly
+ * and yearly pay compare fairly; events span their ticket prices. `null` = no price given.
+ */
+function listingPriceRange(row: {
+  category?: string;
+  price?: number;
+  extras?: Record<string, unknown>;
+}): { min: number; max: number } | null {
+  const extras = row.extras || {};
+  const price = Number(row.price) || 0;
+  if (row.category === "jobs") {
+    const job = (extras.job || {}) as Record<string, unknown>;
+    const label = String(job.salaryLabel || "").replace(/,/g, "");
+    const factor = salaryPeriodFactor(job.salaryPeriod || label);
+    let low = positiveAmount(job.salaryMin);
+    let high = positiveAmount(job.salaryMax);
+    if (!low && !high) {
+      const nums = (label.match(/\d+(?:\.\d+)?/g) || []).map(Number).filter((n) => n > 0);
+      low = nums.length ? Math.min(...nums) : price;
+      high = nums.length ? Math.max(...nums) : price;
+    }
+    low = low || high;
+    high = high || low;
+    if (!low) return null;
+    return { min: Math.min(low, high) * factor, max: Math.max(low, high) * factor };
+  }
+  const event = (extras.event || {}) as { tickets?: { price?: unknown }[] };
+  const tiers = (Array.isArray(event.tickets) ? event.tickets : [])
+    .map((tier) => Number(tier?.price))
+    .filter((n) => Number.isFinite(n) && n >= 0);
+  if (row.category === "events" && tiers.length) {
+    return { min: Math.min(...tiers), max: Math.max(...tiers) };
+  }
+  return { min: price, max: price };
+}
+
+/**
+ * Price sorts can't use the stored `price` alone: job salaries are ranges paid per month
+ * or per year. Low to high orders by the bottom of each range, high to low by the top,
+ * and listings without a price go last.
+ */
+async function findPageByPriceRange(
+  filter: Record<string, unknown>,
+  direction: "asc" | "desc",
+  skip: number,
+  limit: number,
+) {
+  const candidates = await Listing.find(filter)
+    .select("_id category price createdAt extras.job extras.event.tickets")
+    .lean();
+  const ranked = candidates
+    .map((row) => ({
+      id: row._id,
+      range: listingPriceRange(row as Parameters<typeof listingPriceRange>[0]),
+      createdAt: new Date((row as { createdAt?: Date }).createdAt || 0).getTime(),
+    }))
+    .sort((a, b) => {
+      if (!a.range || !b.range) return a.range ? -1 : b.range ? 1 : b.createdAt - a.createdAt;
+      const byRange =
+        direction === "asc"
+          ? a.range.min - b.range.min || a.range.max - b.range.max
+          : b.range.max - a.range.max || b.range.min - a.range.min;
+      return byRange || b.createdAt - a.createdAt;
+    });
+  const pageIds = ranked.slice(skip, skip + limit).map((row) => row.id);
+  const docs = await Listing.find({ _id: { $in: pageIds } });
+  const byId = new Map(docs.map((doc) => [doc._id.toString(), doc]));
+  const rows = pageIds
+    .map((id) => byId.get(id.toString()))
+    .filter((doc): doc is NonNullable<typeof doc> => Boolean(doc));
+  return [rows, candidates.length] as const;
 }
 
 async function browseListingsUncached(
@@ -726,6 +882,18 @@ async function browseListingsUncached(
     if (isMongoObjectId(q)) filter._id = q;
     else await applyKeywordSearch(filter, q, countryCode);
   }
+  if (query.company) {
+    const companyRx = new RegExp(`^\\s*${escapeRegex(query.company)}\\s*$`, "i");
+    filter.$and = [
+      ...((filter.$and as unknown[]) || []),
+      {
+        $or: [
+          { "extras.job.companyName": companyRx },
+          { "extras.job.companyName": { $in: [null, ""] }, sellerName: companyRx },
+        ],
+      },
+    ];
+  }
 
   // type alias used by UI: rentals => property deal types in extras
   if (query.type === "rentals") {
@@ -745,8 +913,6 @@ async function browseListingsUncached(
 
   let sort: Record<string, 1 | -1> = { createdAt: -1 };
   if (query.sort === "oldest") sort = { createdAt: 1 };
-  if (query.sort === "price-asc") sort = { price: 1 };
-  if (query.sort === "price-desc") sort = { price: -1 };
 
   if (radiusSearch) {
     const withinRadius = {
@@ -770,13 +936,16 @@ async function browseListingsUncached(
     filter.$or = [withinRadius, placeText ? { $and: [unpinned, placeText] } : unpinned];
   }
 
-  const [rows, total] = await Promise.all([
-    Listing.find(filter)
-      .sort(query.sort === "nearest" ? { createdAt: -1 } : sort)
-      .skip(skip)
-      .limit(limit),
-    Listing.countDocuments(filter),
-  ]);
+  const byPrice = query.sort === "price-asc" || query.sort === "price-desc";
+  const [rows, total] = byPrice
+    ? await findPageByPriceRange(filter, query.sort === "price-asc" ? "asc" : "desc", skip, limit)
+    : await Promise.all([
+        Listing.find(filter)
+          .sort(query.sort === "nearest" ? { createdAt: -1 } : sort)
+          .skip(skip)
+          .limit(limit),
+        Listing.countDocuments(filter),
+      ]);
 
   let items = rows.map((row) => ({
     ...toPublic(row),
