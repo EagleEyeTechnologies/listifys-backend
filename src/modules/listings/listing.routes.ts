@@ -11,6 +11,7 @@ import {
   listMyListings,
   listQuerySchema,
   softDeleteListing,
+  topHiringCompanies,
   updateListing,
   updateListingSchema,
 } from "./listing.service.js";
@@ -45,6 +46,16 @@ listingsRouter.get(
   asyncHandler(async (req, res) => {
     const counts = await countListingsByCategory(req.countryCode);
     res.json({ success: true, data: { counts } });
+  }),
+);
+
+listingsRouter.get(
+  "/hiring-companies",
+  optionalAuth,
+  asyncHandler(async (req, res) => {
+    const limit = Number(req.query.limit) || 5;
+    const items = await topHiringCompanies(req.countryCode, req.userId, limit);
+    res.json({ success: true, data: { items } });
   }),
 );
 

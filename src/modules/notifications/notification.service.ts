@@ -77,7 +77,7 @@ export async function createNotification(input: {
       void sendFcmToTokens(tokens, {
         title: input.title,
         body: input.body,
-        data: { type: input.type, href: input.href || "" },
+        data: { type: input.type, href: input.href || "", notificationId: doc._id.toString() },
       }).then(async (result) => {
         if (!result.invalidTokens.length) return;
         await User.updateOne(

@@ -615,11 +615,9 @@ export async function startConversation(
 
   // Listing context card BEFORE the opening text (stable ordering).
   if (listingMeta.listingId && (isNew || listingChanged)) {
-    // Place just after any prior messages, but before the opener we send next.
-    const base = conversation.lastMessageAt
-      ? new Date(conversation.lastMessageAt).getTime()
-      : Date.now() - 40;
-    const tCard = new Date(Math.min(base + 10, Date.now() - 20));
+    // Stamped just before the opener we send next, so it falls on the same day as that chat.
+    const last = conversation.lastMessageAt ? new Date(conversation.lastMessageAt).getTime() : 0;
+    const tCard = new Date(Math.max(last + 1, Date.now() - 20));
     await sendMessage(userId, conversationId, chatListingSwitchMessage(listingMeta.listingTitle), {
       kind: "system",
       createdAt: tCard,
