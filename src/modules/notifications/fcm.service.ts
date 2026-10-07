@@ -1,12 +1,11 @@
 /**
  * FCM push via Firebase Admin (modular SDK).
  */
-import path from "path";
-import fs from "fs";
 import { cert, getApps, initializeApp, type App } from "firebase-admin/app";
 import { getMessaging } from "firebase-admin/messaging";
 import { env } from "../../config/env.js";
 import { logger } from "../../utils/logger.js";
+import { resolveFirebaseServiceAccount } from "./firebaseCredentials.js";
 import { sendWebPush } from "./webPush.service.js";
 
 let app: App | null = null;
@@ -19,49 +18,6 @@ function stringifyData(obj: Record<string, unknown> = {}) {
     out[k] = typeof v === "string" ? v : String(v);
   }
   return out;
-}
-
-function resolveServiceAccount(): Record<string, unknown> | null {
-  const jsonValue = env.FIREBASE_SERVICE_ACCOUNT_JSON?.trim() || "";
-  const pathValue = env.FIREBASE_SERVICE_ACCOUNT_PATH?.trim() || "";
-  const saPathRaw = pathValue || (jsonValue && !jsonValue.startsWith("{") ? jsonValue : null);
-
-  if (saPathRaw) {
-    const candidates = [
-      path.isAbsolute(saPathRaw) ? saPathRaw : null,
-      path.join(process.cwd(), saPathRaw),
-      path.join(process.cwd(), "..", "..", "old-code", "server", saPathRaw),
-      path.join(
-        process.cwd(),
-        "..",
-        "..",
-        "old-code",
-        "server",
-        "config",
-        "firebase-service-account.json",
-      ),
-    ].filter(Boolean) as string[];
-    const resolved = candidates.find((p) => fs.existsSync(p));
-    if (!resolved) return null;
-    return JSON.parse(fs.readFileSync(resolved, "utf8")) as Record<string, unknown>;
-  }
-
-  if (
-    env.FIREBASE_SERVICE_ACCOUNT_JSON &&
-    env.FIREBASE_SERVICE_ACCOUNT_JSON.trim().startsWith("{")
-  ) {
-    return JSON.parse(env.FIREBASE_SERVICE_ACCOUNT_JSON) as Record<string, unknown>;
-  }
-
-  if (env.FIREBASE_PROJECT_ID && env.FIREBASE_CLIENT_EMAIL && env.FIREBASE_PRIVATE_KEY) {
-    return {
-      project_id: env.FIREBASE_PROJECT_ID,
-      client_email: env.FIREBASE_CLIENT_EMAIL,
-      private_key: env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, "\n"),
-    };
-  }
-
-  return null;
 }
 
 function ensureApp(): App | null {
@@ -77,16 +33,19 @@ function ensureApp(): App | null {
       return app;
     }
 
-    const serviceAccount = resolveServiceAccount();
-    if (!serviceAccount) {
-      logger.warn("[FCM] No Firebase credentials — device push disabled");
+    const resolved = resolveFirebaseServiceAccount(env);
+    if (!resolved) {
+      logger.warn(
+        "[FCM] No Firebase credentials — device push disabled. Set FIREBASE_SERVICE_ACCOUNT_JSON (one-line JSON) or FIREBASE_PROJECT_ID, FIREBASE_CLIENT_EMAIL and FIREBASE_PRIVATE_KEY.",
+        { pathConfigured: Boolean(env.FIREBASE_SERVICE_ACCOUNT_PATH?.trim()) },
+      );
       return null;
     }
 
     app = initializeApp({
-      credential: cert(serviceAccount as Parameters<typeof cert>[0]),
+      credential: cert(resolved.account as Parameters<typeof cert>[0]),
     });
-    logger.info("[FCM] Firebase Admin SDK initialized");
+    logger.info("[FCM] Firebase Admin SDK initialized", { source: resolved.source });
     return app;
   } catch (err) {
     logger.error("[FCM] Failed to initialize Firebase Admin SDK", {
