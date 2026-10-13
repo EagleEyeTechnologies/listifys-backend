@@ -57,7 +57,7 @@ authRouter.post(
     }
     const data = await registerWithEmail(parsed.data);
     setAuthCookies(res, data.accessToken, data.refreshToken);
-    recordLogin(req, data.user?.id, "register");
+    recordLogin(req, data.user?.id, "register", data.refreshToken);
     res.status(201).json({ success: true, data });
   }),
 );
@@ -83,7 +83,7 @@ authRouter.post(
     }
     const data = await loginWithEmail(parsed.data);
     setAuthCookies(res, data.accessToken, data.refreshToken);
-    recordLogin(req, data.user?.id, "password");
+    recordLogin(req, data.user?.id, "password", data.refreshToken);
     res.json({ success: true, data });
   }),
 );
@@ -109,7 +109,7 @@ authRouter.post(
     }
     const data = await resetPasswordWithOtp(parsed.data);
     setAuthCookies(res, data.accessToken, data.refreshToken);
-    recordLogin(req, data.user?.id, "password_reset");
+    recordLogin(req, data.user?.id, "password_reset", data.refreshToken);
     res.json({ success: true, data });
   }),
 );
@@ -135,7 +135,7 @@ authRouter.post(
     }
     const data = await verifyEmailOtp(parsed.data);
     setAuthCookies(res, data.accessToken, data.refreshToken);
-    recordLogin(req, data.user?.id, "email_otp");
+    recordLogin(req, data.user?.id, "email_otp", data.refreshToken);
     res.json({ success: true, data });
   }),
 );
@@ -165,7 +165,7 @@ authRouter.post(
     }
     const data = await verifyPhoneOtp(parsed.data);
     setAuthCookies(res, data.accessToken, data.refreshToken);
-    recordLogin(req, data.user?.id, "phone_otp");
+    recordLogin(req, data.user?.id, "phone_otp", data.refreshToken);
     res.json({ success: true, data });
   }),
 );
@@ -208,7 +208,7 @@ authRouter.post(
     }
     const data = await socialLogin("google", parsed.data);
     setAuthCookies(res, data.accessToken, data.refreshToken);
-    recordLogin(req, data.user?.id, "google");
+    recordLogin(req, data.user?.id, "google", data.refreshToken);
     res.json({ success: true, data });
   }),
 );
@@ -222,7 +222,7 @@ authRouter.post(
     }
     const data = await socialLogin("apple", parsed.data);
     setAuthCookies(res, data.accessToken, data.refreshToken);
-    recordLogin(req, data.user?.id, "apple");
+    recordLogin(req, data.user?.id, "apple", data.refreshToken);
     res.json({ success: true, data });
   }),
 );

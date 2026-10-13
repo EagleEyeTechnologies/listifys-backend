@@ -10,6 +10,16 @@ export const createJobAlertSchema = z.object({
   listingId: z.string().trim().max(64).optional().default(""),
 });
 
+function jobAlertHref(keyword: string, location?: string) {
+  const params = new URLSearchParams();
+  const q = keyword.trim();
+  if (q) params.set("q", q);
+  const city = (location || "").trim();
+  if (city) params.set("city", city);
+  const qs = params.toString();
+  return qs ? `/jobs?${qs}` : "/jobs";
+}
+
 function serialize(doc: InstanceType<typeof JobAlert>) {
   return {
     id: doc._id.toString(),
@@ -57,7 +67,7 @@ export async function createJobAlert(userId: string, input: z.infer<typeof creat
       type: "listing",
       title: "Job alert created",
       body: `Watching for “${input.keyword}”${where}.`,
-      href: "/jobs",
+      href: jobAlertHref(input.keyword, input.location),
     });
   }
   return serialize(doc);

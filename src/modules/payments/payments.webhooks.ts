@@ -5,6 +5,7 @@ import { WebhookEvent } from "./webhookEvent.model.js";
 import { activateForPayment, refundForPayment } from "./activatePayment.js";
 import { logger } from "../../utils/logger.js";
 import { AppError } from "../../utils/AppError.js";
+import { captureRazorpayPayment, fetchRazorpayPayment } from "./payments.service.js";
 
 function safeEqual(a: string, b: string) {
   const ba = Buffer.from(a);
@@ -49,7 +50,19 @@ export async function confirmRazorpayPayment(input: {
 
   payment.providerPaymentId = input.paymentId;
   await payment.save();
+  await captureIfAuthorized(input.paymentId);
   return activateForPayment(payment._id.toString());
+}
+
+async function captureIfAuthorized(paymentId: string) {
+  try {
+    const remote = await fetchRazorpayPayment(paymentId);
+    if (remote?.status === "authorized") {
+      await captureRazorpayPayment(paymentId, remote.amount, remote.currency);
+    }
+  } catch (err) {
+    logger.error("Razorpay auto-capture failed", { paymentId, err: String(err) });
+  }
 }
 
 async function recordWebhook(input: {

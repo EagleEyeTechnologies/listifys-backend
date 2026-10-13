@@ -44,7 +44,11 @@ listingsRouter.get(
   "/counts",
   optionalAuth,
   asyncHandler(async (req, res) => {
-    const counts = await countListingsByCategory(req.countryCode);
+    const parsed = listQuerySchema.safeParse(req.query);
+    if (!parsed.success) {
+      throw new AppError(400, "Invalid query", "VALIDATION_ERROR", parsed.error.flatten());
+    }
+    const counts = await countListingsByCategory(req.countryCode, parsed.data, req.userId);
     res.json({ success: true, data: { counts } });
   }),
 );

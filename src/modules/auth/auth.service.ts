@@ -6,12 +6,18 @@ import { User } from "../users/user.model.js";
 import { assertStrongPassword } from "./passwordPolicy.js";
 import { assertOtpValid, consumeOtp, issueOtp, verifyOtp } from "./otp.js";
 import {
+  destroyRefreshToken,
+  destroySession,
   isRefreshTokenValid,
   issueTokenPair,
   revokeRefreshToken,
+  sessionFloor,
+  sessionOwner,
   storeRefreshToken,
+  storeSession,
   verifyRefreshToken,
 } from "./tokens.js";
+import { touchLoginSession } from "./loginActivity.js";
 import { AppError } from "../../utils/AppError.js";
 import { absolutizeMediaUrl } from "../../utils/mediaUrl.js";
 import {
@@ -112,10 +118,13 @@ function publicUser(user: {
   };
 }
 
-async function tokensFor(userId: string) {
+async function tokensFor(userId: string, existingSessionId?: string) {
   const jti = randomUUID();
+  const sessionId = existingSessionId || randomUUID();
   await storeRefreshToken(userId, jti);
-  return issueTokenPair(userId, jti);
+  await storeSession(sessionId, userId);
+  if (existingSessionId) await touchLoginSession(userId, existingSessionId, jti);
+  return issueTokenPair(userId, jti, sessionId);
 }
 
 async function hashPassword(password: string) {
@@ -393,8 +402,18 @@ export async function refreshSession(refreshToken: string) {
   const payload = verifyRefreshToken(refreshToken);
   const ok = await isRefreshTokenValid(payload.sub, payload.jti);
   if (!ok) throw new AppError(401, "Refresh token revoked", "UNAUTHORIZED");
+  const floor = await sessionFloor(payload.sub);
+  if (floor && payload.iat && payload.iat * 1000 + 5000 < floor) {
+    throw new AppError(401, "Session ended. Sign in again.", "UNAUTHORIZED");
+  }
+  if (payload.sid) {
+    const owner = await sessionOwner(payload.sid);
+    if (owner !== payload.sub) {
+      throw new AppError(401, "Session ended. Sign in again.", "UNAUTHORIZED");
+    }
+  }
   await revokeRefreshToken(payload.sub, payload.jti);
-  const tokens = await tokensFor(payload.sub);
+  const tokens = await tokensFor(payload.sub, payload.sid);
   const user = await User.findById(payload.sub);
   if (!user || !user.isActive) {
     throw new AppError(401, "User not found", "UNAUTHORIZED");
@@ -402,11 +421,17 @@ export async function refreshSession(refreshToken: string) {
   return { user: publicUser(user), ...tokens };
 }
 
+/** New tokens for the device that just signed everyone else out. */
+export async function reissueSession(userId: string, sessionId?: string) {
+  return tokensFor(userId, sessionId || undefined);
+}
+
 export async function logout(refreshToken?: string) {
   if (!refreshToken) return;
   try {
     const payload = verifyRefreshToken(refreshToken);
-    await revokeRefreshToken(payload.sub, payload.jti);
+    await destroyRefreshToken(payload.sub, payload.jti);
+    if (payload.sid) await destroySession(payload.sid);
   } catch {
     // ignore invalid token on logout
   }

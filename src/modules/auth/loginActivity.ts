@@ -2,6 +2,14 @@ import type { Request } from "express";
 import mongoose, { Schema } from "mongoose";
 import { env } from "../../config/env.js";
 import { logger } from "../../utils/logger.js";
+import { AppError } from "../../utils/AppError.js";
+import {
+  destroyRefreshToken,
+  destroySession,
+  sessionOwner,
+  setSessionFloor,
+  verifyRefreshToken,
+} from "./tokens.js";
 
 export type LoginMethod =
   "password" | "register" | "password_reset" | "email_otp" | "phone_otp" | "google" | "apple";
@@ -29,11 +37,15 @@ const loginActivitySchema = new Schema(
     city: { type: String, default: "" },
     region: { type: String, default: "" },
     country: { type: String, default: "" },
+    sessionId: { type: String, default: "" },
+    jti: { type: String, default: "" },
+    revokedAt: { type: Date, default: null },
   },
   { timestamps: { createdAt: true, updatedAt: false } },
 );
 
 loginActivitySchema.index({ userId: 1, createdAt: -1 });
+loginActivitySchema.index({ userId: 1, sessionId: 1 });
 loginActivitySchema.index({ createdAt: 1 }, { expireAfterSeconds: RETENTION_DAYS * 24 * 60 * 60 });
 
 const LoginActivity = mongoose.model("LoginActivity", loginActivitySchema);
@@ -131,12 +143,77 @@ async function lookupLocation(ip: string): Promise<GeoFields | null> {
   return geo.city || geo.country ? geo : null;
 }
 
+function sessionFromRefreshToken(refreshToken?: string) {
+  if (!refreshToken) return { sessionId: "", jti: "" };
+  try {
+    const payload = verifyRefreshToken(refreshToken);
+    return { sessionId: payload.sid || "", jti: payload.jti || "" };
+  } catch {
+    return { sessionId: "", jti: "" };
+  }
+}
+
+/** Keeps the latest refresh id on the sign-in row after a token rotation. */
+export async function touchLoginSession(userId: string, sessionId: string, jti: string) {
+  if (!sessionId || !jti) return;
+  await LoginActivity.updateOne({ userId, sessionId }, { $set: { jti } });
+}
+
+async function endStoredSession(
+  userId: string,
+  row: { _id: unknown; sessionId?: string; jti?: string },
+) {
+  if (row.sessionId) await destroySession(row.sessionId);
+  if (row.jti) await destroyRefreshToken(userId, row.jti);
+  await LoginActivity.updateOne({ _id: row._id }, { $set: { revokedAt: new Date() } });
+}
+
+export async function revokeLoginSession(userId: string, activityId: string) {
+  if (!mongoose.isValidObjectId(activityId)) {
+    throw new AppError(404, "Sign-in not found", "NOT_FOUND");
+  }
+  const row = await LoginActivity.findOne({ _id: activityId, userId });
+  if (!row) throw new AppError(404, "Sign-in not found", "NOT_FOUND");
+  if (!row.sessionId || row.revokedAt) {
+    throw new AppError(400, "That sign-in is no longer active", "SESSION_INACTIVE");
+  }
+  await endStoredSession(userId, row);
+}
+
+export async function revokeOtherLoginSessions(userId: string, currentSessionId?: string) {
+  await setSessionFloor(userId);
+  const rows = await LoginActivity.find({
+    userId,
+    revokedAt: null,
+    sessionId: { $exists: true, $nin: ["", currentSessionId || ""] },
+  });
+  await Promise.all(rows.map((row) => endStoredSession(userId, row)));
+  return rows.length;
+}
+
+export async function revokeAllLoginSessions(userId: string) {
+  await setSessionFloor(userId);
+  const rows = await LoginActivity.find({
+    userId,
+    revokedAt: null,
+    sessionId: { $exists: true, $ne: "" },
+  });
+  await Promise.all(rows.map((row) => endStoredSession(userId, row)));
+  return rows.length;
+}
+
 /** Records a successful sign-in. Never throws; location is filled in after the response. */
-export function recordLogin(req: Request, userId: string | undefined, method: LoginMethod) {
+export function recordLogin(
+  req: Request,
+  userId: string | undefined,
+  method: LoginMethod,
+  refreshToken?: string,
+) {
   if (!userId || !mongoose.isValidObjectId(userId)) return;
   const ip = clientIp(req);
   const { device, platform } = describeDevice(header(req, "user-agent"));
   const fromHeaders = locationFromHeaders(req);
+  const { sessionId, jti } = sessionFromRefreshToken(refreshToken);
   void (async () => {
     try {
       const doc = await LoginActivity.create({
@@ -145,6 +222,8 @@ export function recordLogin(req: Request, userId: string | undefined, method: Lo
         ip,
         device,
         platform,
+        sessionId,
+        jti,
         ...(fromHeaders || {}),
       });
       if (fromHeaders) return;
@@ -175,12 +254,19 @@ export async function listLoginActivity(req: Request, userId: string, limit = 20
     .lean();
   const ip = clientIp(req);
   const { device } = describeDevice(header(req, "user-agent"));
+  const requestSession = req.sessionId || "";
   let currentMarked = false;
-  return rows.map((r) => {
-    const isCurrent = !currentMarked && r.ip === ip && r.device === device;
+  const items = [];
+  for (const r of rows) {
+    const sessionId = r.sessionId || "";
+    const owner = sessionId ? await sessionOwner(sessionId) : null;
+    const active = Boolean(sessionId) && !r.revokedAt && owner === String(r.userId);
+    const isCurrent = requestSession
+      ? sessionId === requestSession && active
+      : !currentMarked && r.ip === ip && r.device === device;
     if (isCurrent) currentMarked = true;
     const method = r.method as LoginMethod;
-    return {
+    items.push({
       id: String(r._id),
       method,
       methodLabel: METHOD_LABELS[method] || method,
@@ -190,6 +276,10 @@ export async function listLoginActivity(req: Request, userId: string, limit = 20
       ip: maskIp(r.ip || ""),
       createdAt: (r as { createdAt?: Date }).createdAt?.toISOString() || null,
       current: isCurrent,
-    };
-  });
+      active,
+      canRevoke: active && !isCurrent,
+      ended: Boolean(sessionId) && !active,
+    });
+  }
+  return items;
 }
