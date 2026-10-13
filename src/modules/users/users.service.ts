@@ -118,6 +118,10 @@ export async function toPublicUser(user: InstanceType<typeof User>, viewerId?: s
     seller: user._id,
     status: { $in: isSelf ? ["active", "sold", "paused"] : ["active", "sold"] },
   });
+  const soldCount = await Listing.countDocuments({
+    seller: user._id,
+    status: "sold",
+  });
   const followerIds = idsOf(user.followers);
   const followingIds = idsOf(user.following);
   const id = user._id.toString();
@@ -136,6 +140,7 @@ export async function toPublicUser(user: InstanceType<typeof User>, viewerId?: s
     averageRating: stats.averageRating,
     totalReviews: stats.totalReviews,
     listingCount,
+    soldCount,
     followersCount: followerIds.length,
     followingCount: followingIds.length,
     isFollowing: viewerId ? followerIds.includes(viewerId) : false,
@@ -195,6 +200,7 @@ export async function getPublicSellerProfile(idOrSlug: string, viewerId?: string
 
   const sample = listings[0];
   const activeCount = listings.filter((l) => l.status === "active").length;
+  const soldCount = await Listing.countDocuments({ seller: id, status: "sold" });
   const stubSlug = sellerSlugFrom(sample.sellerName || "seller", id);
   return {
     id,
@@ -209,6 +215,7 @@ export async function getPublicSellerProfile(idOrSlug: string, viewerId?: string
     averageRating: 0,
     totalReviews: 0,
     listingCount: activeCount || listings.length,
+    soldCount,
     followersCount: 0,
     followingCount: 0,
     isFollowing: false,

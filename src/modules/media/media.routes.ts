@@ -1,4 +1,4 @@
-import { PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
+import { GetObjectCommand, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import express, { Router } from "express";
 import { z } from "zod";
@@ -104,6 +104,72 @@ mediaRouter.post(
       success: true,
       data: { uploadUrl, publicUrl, key, mock: false },
     });
+  }),
+);
+
+/** S3 key for a URL inside our own bucket; anything else is refused. */
+function ownBucketKey(raw: string): string | null {
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    return null;
+  }
+  const bases = [
+    env.AWS_S3_BUCKET_URL,
+    `https://${env.AWS_S3_BUCKET_NAME}.s3.${env.AWS_REGION}.amazonaws.com`,
+    `https://${env.AWS_S3_BUCKET_NAME}.s3.amazonaws.com`,
+  ].filter((base): base is string => Boolean(base));
+  for (const base of bases) {
+    let root: URL;
+    try {
+      root = new URL(base);
+    } catch {
+      continue;
+    }
+    const prefix = `${root.pathname.replace(/\/$/, "")}/`;
+    if (url.host !== root.host || !url.pathname.startsWith(prefix)) continue;
+    const key = decodeURIComponent(url.pathname.slice(prefix.length));
+    if (!key || key.includes("..")) return null;
+    return key;
+  }
+  return null;
+}
+
+const imageProxySchema = z.object({ url: z.string().min(8).max(2000) });
+
+/**
+ * Same-origin copy of one of our own listing photos. Browsers can't read S3 pixels into a
+ * canvas without bucket CORS, and the crop editor needs them.
+ */
+mediaRouter.get(
+  "/image",
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const parsed = imageProxySchema.safeParse(req.query);
+    if (!parsed.success) {
+      throw new AppError(400, "Invalid image URL", "VALIDATION_ERROR");
+    }
+    if (!s3Configured()) {
+      throw new AppError(503, "Media is not configured (S3)", "S3_NOT_CONFIGURED");
+    }
+    const key = ownBucketKey(absolutizeMediaUrl(parsed.data.url));
+    if (!key) throw new AppError(400, "Only Listifys photos can be loaded", "VALIDATION_ERROR");
+
+    const object = await s3Client()
+      .send(new GetObjectCommand({ Bucket: env.AWS_S3_BUCKET_NAME, Key: key }))
+      .catch(() => null);
+    const contentType = String(object?.ContentType || "");
+    if (!object?.Body || !contentType.startsWith("image/")) {
+      throw new AppError(404, "Image not found", "NOT_FOUND");
+    }
+    if (Number(object.ContentLength || 0) > 12 * 1024 * 1024) {
+      throw new AppError(413, "Image too large", "PAYLOAD_TOO_LARGE");
+    }
+    const bytes = await object.Body.transformToByteArray();
+    res.setHeader("Content-Type", contentType);
+    res.setHeader("Cache-Control", "private, max-age=300");
+    res.send(Buffer.from(bytes));
   }),
 );
 

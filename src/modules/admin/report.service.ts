@@ -93,9 +93,17 @@ async function notifyReportedParty(input: {
   }
 }
 
+function reportTargetPhrase(type: z.infer<typeof createUserReportSchema>["type"], subject: string) {
+  if (type === "user" || type === "chat") return `the user “${subject}”`;
+  if (type === "review") return `the review “${subject}”`;
+  if (type === "image") return `a photo on the listing “${subject}”`;
+  return `the listing “${subject}”`;
+}
+
 /** Confirm the report to the person who filed it. Moderators work from the admin panel queue. */
 async function notifyReportSubmitted(input: {
   reportId: string;
+  type: z.infer<typeof createUserReportSchema>["type"];
   subject: string;
   reason: string;
   reporterId: string;
@@ -103,7 +111,14 @@ async function notifyReportSubmitted(input: {
   /** Page of the reported listing, profile, or chat. */
   targetHref: string;
 }) {
-  const body = `Thanks — we received your report on “${input.subject}” (${input.reason}). Our team will review it.`;
+  const about = reportTargetPhrase(input.type, input.subject);
+  const scope =
+    input.type === "user" || input.type === "chat"
+      ? " This report is about the user, not one of their listings."
+      : input.type === "listing" || input.type === "image"
+        ? " This report is about the listing, not the seller's profile."
+        : "";
+  const body = `Thanks — we received your report about ${about} (${input.reason}). Our team will review it.${scope}`;
   const title = "Report received";
 
   try {
@@ -239,10 +254,14 @@ export async function createUserReport(
     if (!partIds.includes(String(reporterId))) {
       throw new AppError(403, "Not a participant", "FORBIDDEN");
     }
-    subject = convo.listingTitle || "Conversation";
+    const otherId = partIds.find((id) => id !== String(reporterId));
+    const other = otherId ? await User.findById(otherId).select("name email slug") : null;
+    subject = other?.name || other?.email || "User";
+    if (other) userId = other._id;
     conversationId = convo._id;
-    targetHref = `/messages?c=${convo._id.toString()}`;
-    if (convo.listingId) listingId = convo.listingId as mongoose.Types.ObjectId;
+    targetHref = other
+      ? `/sellerprofile/${other.slug || other._id.toString()}`
+      : `/messages?c=${convo._id.toString()}`;
   } else if (input.type === "review") {
     const review = await SellerReview.findById(input.targetId)
       .populate("reviewer", "name email")
@@ -300,6 +319,7 @@ export async function createUserReport(
 
   await notifyReportSubmitted({
     reportId: doc._id.toString(),
+    type,
     subject,
     reason: input.reason.trim(),
     reporterId,
@@ -316,7 +336,7 @@ export async function createUserReport(
       reason: input.reason.trim(),
       href: targetHref,
     });
-  } else if (type === "user" && userId) {
+  } else if ((type === "user" || type === "chat") && userId) {
     await notifyReportedParty({
       recipientId: userId.toString(),
       target: "profile",

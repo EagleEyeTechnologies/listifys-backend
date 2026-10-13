@@ -22,6 +22,7 @@ import {
   createRazorpayOrder,
   createStripePaymentIntent,
   paymentConfigFor,
+  paymentCountryForCharge,
 } from "../payments/payments.service.js";
 import {
   confirmRazorpayPayment,
@@ -253,7 +254,10 @@ eventTicketsRouter.post(
       return;
     }
 
-    const cfg = paymentConfigFor(req.countryCode);
+    const currency = (listing.currency || "USD").toUpperCase();
+    const cfg = paymentConfigFor(
+      paymentCountryForCharge(currency, listing.countryCode, req.countryCode),
+    );
     if (!cfg.provider) {
       throw new AppError(
         503,
@@ -263,7 +267,6 @@ eventTicketsRouter.post(
     }
 
     const amountMinor = Math.round(quote.totalMajor * 100);
-    const currency = (listing.currency || "USD").toUpperCase();
 
     if (cfg.provider === "razorpay") {
       const order = await createRazorpayOrder({

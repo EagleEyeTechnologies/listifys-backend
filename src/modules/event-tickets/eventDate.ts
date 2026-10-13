@@ -77,7 +77,12 @@ export function parseDurationMinutes(raw: unknown): number | null {
   return total > 0 ? Math.min(Math.round(total), 30 * 1440) : null;
 }
 
-type EventFields = { startsAt?: unknown; duration?: unknown; utcOffsetMinutes?: unknown };
+type EventFields = {
+  startsAt?: unknown;
+  endsAt?: unknown;
+  duration?: unknown;
+  utcOffsetMinutes?: unknown;
+};
 
 function eventOf(extras: unknown): EventFields | undefined {
   return extras && typeof extras === "object"
@@ -101,15 +106,22 @@ export function eventStartFromExtras(extras: unknown, countryCode?: string | nul
   );
 }
 
-/** Start plus duration. */
+/** The organizer's end time when it is after the start, else start plus duration. */
 export function eventEndFromExtras(extras: unknown, countryCode?: string | null): Date | null {
   const start = eventStartFromExtras(extras, countryCode);
   if (!start) return null;
-  const minutes = parseDurationMinutes(eventOf(extras)?.duration) ?? DEFAULT_EVENT_MINUTES;
+  const event = eventOf(extras);
+  const rawEnd = event?.endsAt;
+  const end = parseEventStartsAt(
+    typeof rawEnd === "string" || rawEnd instanceof Date ? rawEnd : null,
+    offsetFor(event, countryCode),
+  );
+  if (end && end.getTime() > start.getTime()) return end;
+  const minutes = parseDurationMinutes(event?.duration) ?? DEFAULT_EVENT_MINUTES;
   return new Date(start.getTime() + minutes * 60_000);
 }
 
-/** True once the event has finished (start + duration). */
+/** True once the event has finished. */
 export function isEventPastFromExtras(
   extras: unknown,
   countryCode?: string | null,

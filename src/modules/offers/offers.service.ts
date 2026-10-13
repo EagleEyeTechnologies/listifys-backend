@@ -139,11 +139,21 @@ export async function updateOffer(
   }
   const offer = await ListingOffer.findById(offerId);
   if (!offer) throw new AppError(404, "Offer not found", "NOT_FOUND");
-  if (offer.seller.toString() !== userId) {
-    throw new AppError(403, "Only the seller can respond", "FORBIDDEN");
+  const sellerId = offer.seller.toString();
+  const buyerId = offer.buyer.toString();
+  const isSeller = sellerId === userId;
+  const isBuyer = buyerId === userId;
+  if (!isSeller && !isBuyer) {
+    throw new AppError(403, "You cannot respond to this offer", "FORBIDDEN");
   }
-  if (offer.status !== "pending" && offer.status !== "countered") {
+  if (offer.status === "accepted" || offer.status === "declined") {
     throw new AppError(400, "Offer already closed", "VALIDATION_ERROR");
+  }
+  if (isSeller && offer.status !== "pending") {
+    throw new AppError(400, "Waiting for the buyer to respond to your counter", "VALIDATION_ERROR");
+  }
+  if (isBuyer && offer.status !== "countered") {
+    throw new AppError(400, "Waiting for the seller to respond", "VALIDATION_ERROR");
   }
 
   if (input.action === "accept") offer.status = "accepted";
@@ -153,20 +163,42 @@ export async function updateOffer(
       throw new AppError(400, "Counter amount required", "VALIDATION_ERROR");
     }
     assertOfferAmount(input.counterAmount, offer.currency);
-    offer.status = "countered";
-    offer.counterAmount = input.counterAmount;
+    if (isSeller) {
+      offer.status = "countered";
+      offer.counterAmount = input.counterAmount;
+    } else {
+      offer.status = "pending";
+      offer.amount = input.counterAmount;
+      offer.counterAmount = undefined;
+    }
     if (input.message) offer.message = input.message;
   }
+  const buyerCountered = isBuyer && input.action === "counter";
   await offer.save();
+  if (buyerCountered) {
+    await ListingOffer.updateOne({ _id: offer._id }, { $unset: { counterAmount: 1 } });
+  }
+
+  const agreed = offer.counterAmount || offer.amount;
+  const otherId = isSeller ? buyerId : sellerId;
+  const title = `Offer ${offer.status} — ${offer.listingTitle}`;
+  const body = isSeller
+    ? offer.status === "countered"
+      ? `The seller countered at ${offer.currency} ${offer.counterAmount}. You can accept, decline, or counter again.`
+      : offer.status === "accepted"
+        ? `The seller accepted your offer of ${offer.currency} ${agreed}.`
+        : "The seller declined your offer."
+    : offer.status === "pending"
+      ? `The buyer countered at ${offer.currency} ${offer.amount}. You can accept, decline, or counter again.`
+      : offer.status === "accepted"
+        ? `The buyer accepted your counter of ${offer.currency} ${agreed}.`
+        : "The buyer declined your counter.";
 
   await createNotification({
-    userId: offer.buyer.toString(),
+    userId: otherId,
     type: "offer",
-    title: `Offer ${offer.status} — ${offer.listingTitle}`,
-    body:
-      offer.status === "countered"
-        ? `Seller countered at ${offer.currency} ${offer.counterAmount}`
-        : `Your offer was ${offer.status}`,
+    title,
+    body,
     href: "/profile?tab=offers",
     image: offer.listingImage,
   });

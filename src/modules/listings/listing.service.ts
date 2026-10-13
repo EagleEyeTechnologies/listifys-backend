@@ -1,5 +1,6 @@
 import { z } from "zod";
 import mongoose from "mongoose";
+import { SellerReview } from "../reviews/sellerReview.model.js";
 import { Listing } from "./listing.model.js";
 import { ListingView } from "./listingView.model.js";
 import { User } from "../users/user.model.js";
@@ -18,7 +19,11 @@ import { isMongoObjectId, listingSlugFrom } from "../../utils/slug.js";
 import { absolutizeMediaUrl } from "../../utils/mediaUrl.js";
 import { hiddenSellerIds, isEitherBlocked } from "../users/users.service.js";
 import { kv } from "../../redis/client.js";
-import { eventStartFromExtras, isEventPastFromExtras } from "../event-tickets/eventDate.js";
+import {
+  eventStartFromExtras,
+  isEventPastFromExtras,
+  parseEventStartsAt,
+} from "../event-tickets/eventDate.js";
 import { computeInventory, syncEventInventory } from "../event-tickets/eventInventory.js";
 import { normalizeRefundPolicy } from "../event-tickets/refundPolicy.js";
 
@@ -141,11 +146,20 @@ function assertEventFields(
   const startsAt = String(event.startsAt || "").trim();
   const venue = String(event.venue || "").trim();
   const duration = String(event.duration || "").trim();
+  const endsAt = String(event.endsAt || "").trim();
   if (!startsAt || !eventStartIsUpcoming(input.extras, countryCode)) {
     throw new AppError(400, "Choose an event start time in the future", "VALIDATION");
   }
   if (!venue) throw new AppError(400, "Event venue is required", "VALIDATION");
-  if (!duration) throw new AppError(400, "Event duration is required", "VALIDATION");
+  if (endsAt) {
+    const start = parseEventStartsAt(startsAt);
+    const end = parseEventStartsAt(endsAt);
+    if (!start || !end || end.getTime() <= start.getTime()) {
+      throw new AppError(400, "Event end time must be after the start time", "VALIDATION");
+    }
+  } else if (!duration) {
+    throw new AppError(400, "Event end time is required", "VALIDATION");
+  }
 }
 
 export const updateListingSchema = createListingSchema.partial().extend({
@@ -162,6 +176,8 @@ export const listQuerySchema = z.object({
   q: z.string().optional(),
   /** Jobs by this company (case-insensitive); ads without a company name match the poster's name. */
   company: z.string().trim().max(200).optional(),
+  /** Only sellers whose average published review rating is at least this many stars. */
+  minRating: z.coerce.number().min(0).max(5).optional(),
   status: z.enum(["active", "sold", "paused", "expired", "removed"]).optional().default("active"),
   lat: z.coerce.number().optional(),
   lng: z.coerce.number().optional(),
@@ -429,7 +445,8 @@ export async function getListingById(idOrSlug: string, viewerId?: string, anonVi
     extras.event = event;
     payload.extras = extras;
   }
-  return payload;
+  const stats = (await sellerRatingStats([payload.sellerId])).get(payload.sellerId);
+  return { ...payload, sellerRating: stats?.rating, sellerReviewCount: stats?.reviews ?? 0 };
 }
 
 export async function updateListing(
@@ -534,10 +551,30 @@ export async function softDeleteListing(id: string, sellerId: string) {
   return { id };
 }
 
-export async function countListingsByCategory(countryCode: "US" | "CA" | "IN") {
+/** Active listings per category, scoped to the same place and viewer as the browse feed. */
+export async function countListingsByCategory(
+  countryCode: "US" | "CA" | "IN",
+  scope: Pick<
+    Partial<z.infer<typeof listQuerySchema>>,
+    "lat" | "lng" | "radiusMiles" | "place" | "city"
+  > = {},
+  viewerId?: string,
+) {
   await sweepEndedEvents();
+  const filter = await buildBrowseFilter(
+    countryCode,
+    {
+      lat: scope.lat,
+      lng: scope.lng,
+      radiusMiles: scope.radiusMiles,
+      place: scope.place,
+      city: scope.city,
+    },
+    viewerId,
+  );
+  if (!filter) return {};
   const rows = await Listing.aggregate<{ _id: string; count: number }>([
-    { $match: { status: "active", countryCode } },
+    { $match: filter },
     { $group: { _id: "$category", count: { $sum: 1 } } },
   ]);
   const counts: Record<string, number> = {};
@@ -823,12 +860,50 @@ async function findPageByPriceRange(
   return [rows, candidates.length] as const;
 }
 
-async function browseListingsUncached(
+/** Average published review rating (one decimal) and review count per seller. */
+async function sellerRatingStats(sellerIds: string[]) {
+  const ids = [...new Set(sellerIds)].filter((id) => mongoose.isValidObjectId(id));
+  const stats = new Map<string, { rating: number; reviews: number }>();
+  if (!ids.length) return stats;
+  const rows = await SellerReview.aggregate<{
+    _id: mongoose.Types.ObjectId;
+    avg: number;
+    n: number;
+  }>([
+    {
+      $match: {
+        seller: { $in: ids.map((id) => new mongoose.Types.ObjectId(id)) },
+        status: "published",
+      },
+    },
+    { $group: { _id: "$seller", avg: { $avg: "$rating" }, n: { $sum: 1 } } },
+  ]);
+  for (const row of rows) {
+    stats.set(row._id.toString(), { rating: Math.round(row.avg * 10) / 10, reviews: row.n });
+  }
+  return stats;
+}
+
+/** Sellers whose displayed (one-decimal) average rating meets the minimum. */
+async function sellersRatedAtLeast(minRating: number) {
+  const rows = await SellerReview.aggregate<{ _id: mongoose.Types.ObjectId }>([
+    { $match: { status: "published" } },
+    { $group: { _id: "$seller", avg: { $avg: "$rating" } } },
+    { $match: { avg: { $gte: minRating - 0.05 } } },
+    { $project: { _id: 1 } },
+  ]);
+  return rows.map((row) => row._id);
+}
+
+/**
+ * Mongo filter for a browse request; shared by the listing feed and the category counts so
+ * both see the same listings. `null` when the requested seller is hidden from this viewer.
+ */
+async function buildBrowseFilter(
   countryCode: "US" | "CA" | "IN",
-  query: z.infer<typeof listQuerySchema>,
+  query: Partial<z.infer<typeof listQuerySchema>>,
   viewerId?: string,
-) {
-  await sweepEndedEvents();
+): Promise<Record<string, unknown> | null> {
   const viewingOwnListings = Boolean(viewerId) && query.sellerId === viewerId;
   const filter: Record<string, unknown> = {
     status: viewingOwnListings ? query.status || "active" : "active",
@@ -847,15 +922,7 @@ async function browseListingsUncached(
         : filter.seller && typeof filter.seller === "object" && "toString" in filter.seller
           ? String(filter.seller)
           : "";
-    if (requested && hiddenSellers.some((id) => id.toString() === requested)) {
-      return {
-        items: [],
-        page: query.page,
-        limit: query.limit,
-        total: 0,
-        totalPages: 0,
-      };
-    }
+    if (requested && hiddenSellers.some((id) => id.toString() === requested)) return null;
     if (!requested) filter.seller = { $nin: hiddenSellers };
   }
   if (query.category) filter.category = query.category;
@@ -895,6 +962,11 @@ async function browseListingsUncached(
     ];
   }
 
+  if (query.minRating && query.minRating > 0) {
+    const rated = await sellersRatedAtLeast(query.minRating);
+    filter.$and = [...((filter.$and as unknown[]) || []), { seller: { $in: rated } }];
+  }
+
   // type alias used by UI: rentals => property deal types in extras
   if (query.type === "rentals") {
     filter.category = "properties";
@@ -906,13 +978,6 @@ async function browseListingsUncached(
   } else if (query.type === "free") {
     filter.intent = "free";
   }
-
-  const page = query.page;
-  const limit = query.limit;
-  const skip = (page - 1) * limit;
-
-  let sort: Record<string, 1 | -1> = { createdAt: -1 };
-  if (query.sort === "oldest") sort = { createdAt: 1 };
 
   if (radiusSearch) {
     const withinRadius = {
@@ -935,6 +1000,32 @@ async function browseListingsUncached(
     // `place` keep the previous behaviour of showing every unpinned ad.
     filter.$or = [withinRadius, placeText ? { $and: [unpinned, placeText] } : unpinned];
   }
+  return filter;
+}
+
+async function browseListingsUncached(
+  countryCode: "US" | "CA" | "IN",
+  query: z.infer<typeof listQuerySchema>,
+  viewerId?: string,
+) {
+  await sweepEndedEvents();
+  const filter = await buildBrowseFilter(countryCode, query, viewerId);
+  if (!filter) {
+    return {
+      items: [],
+      page: query.page,
+      limit: query.limit,
+      total: 0,
+      totalPages: 0,
+    };
+  }
+
+  const page = query.page;
+  const limit = query.limit;
+  const skip = (page - 1) * limit;
+
+  let sort: Record<string, 1 | -1> = { createdAt: -1 };
+  if (query.sort === "oldest") sort = { createdAt: 1 };
 
   const byPrice = query.sort === "price-asc" || query.sort === "price-desc";
   const [rows, total] = byPrice
@@ -947,10 +1038,16 @@ async function browseListingsUncached(
         Listing.countDocuments(filter),
       ]);
 
-  let items = rows.map((row) => ({
-    ...toPublic(row),
-    distanceMiles: undefined as number | undefined,
-  }));
+  const ratings = await sellerRatingStats(rows.map((row) => String(row.seller)));
+  let items = rows.map((row) => {
+    const stats = ratings.get(String(row.seller));
+    return {
+      ...toPublic(row),
+      sellerRating: stats?.rating,
+      sellerReviewCount: stats?.reviews ?? 0,
+      distanceMiles: undefined as number | undefined,
+    };
+  });
 
   if (query.lat !== undefined && query.lng !== undefined) {
     items = items.map((item) => {

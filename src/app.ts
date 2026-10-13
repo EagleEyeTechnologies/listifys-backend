@@ -19,6 +19,7 @@ import { compareRouter } from "./modules/compare/compare.routes.js";
 import { chatRouter } from "./modules/chat/chat.routes.js";
 import { notificationsRouter } from "./modules/notifications/notification.routes.js";
 import { jobAlertsRouter } from "./modules/job-alerts/jobAlert.routes.js";
+import { postDraftsRouter } from "./modules/post-drafts/postDraft.routes.js";
 import { placesRouter } from "./modules/places/places.routes.js";
 import { boostRouter } from "./modules/boost/boost.routes.js";
 import { paymentsRouter } from "./modules/payments/payments.routes.js";
@@ -85,6 +86,7 @@ export function createApp() {
   app.use("/api/chat", chatRouter);
   app.use("/api/notifications", notificationsRouter);
   app.use("/api/job-alerts", jobAlertsRouter);
+  app.use("/api/post-drafts", postDraftsRouter);
   app.use("/api/media", mediaRouter);
   app.use("/api/images", legacyImagesRouter);
   app.use("/api/places", placesRouter);

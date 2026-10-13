@@ -86,7 +86,34 @@ function sanitizeListingHref(href?: string | null) {
   });
 }
 
-export function serializeMessage(msg: InstanceType<typeof Message>, viewerId: string) {
+function formatListingPrice(price: unknown, currency?: string | null) {
+  const amount = Number(price);
+  if (!Number.isFinite(amount) || amount <= 0) return "";
+  const code = String(currency || "INR")
+    .trim()
+    .toUpperCase();
+  const locale = code === "INR" ? "en-IN" : code === "CAD" ? "en-CA" : "en-US";
+  const symbol = code === "INR" ? "₹" : code === "CAD" ? "C$" : "$";
+  return `${symbol}${amount.toLocaleString(locale)}`;
+}
+
+/** Listing id → ISO currency. Conversations and listing cards only store the price. */
+async function listingCurrencies(ids: (mongoose.Types.ObjectId | string | null | undefined)[]) {
+  const unique = [...new Set(ids.map((id) => (id ? String(id) : "")).filter(Boolean))].filter(
+    (id) => mongoose.isValidObjectId(id),
+  );
+  if (!unique.length) return new Map<string, string>();
+  const docs = await Listing.find({ _id: { $in: unique } })
+    .select("currency")
+    .lean<{ _id: mongoose.Types.ObjectId; currency?: string }[]>();
+  return new Map(docs.map((d) => [d._id.toString(), String(d.currency || "INR")]));
+}
+
+export function serializeMessage(
+  msg: InstanceType<typeof Message>,
+  viewerId: string,
+  currencies?: Map<string, string>,
+) {
   const senderId = msg.sender.toString();
   const mine = senderId === viewerId;
   const createdAt =
@@ -137,15 +164,17 @@ export function serializeMessage(msg: InstanceType<typeof Message>, viewerId: st
       ? {
           id: listingId,
           title: listingTitle || "Listing",
-          price:
-            msg.listingPrice != null && Number(msg.listingPrice) > 0
-              ? `₹${Number(msg.listingPrice).toLocaleString("en-IN")}`
-              : "",
+          price: formatListingPrice(msg.listingPrice, currencies?.get(listingId)),
+          currency: currencies?.get(listingId) || null,
           image: absolutizeMediaUrl(msg.listingImage),
           href: sanitizeListingHref(msg.listingHref),
         }
       : null,
   };
+}
+
+async function serializeOne(msg: InstanceType<typeof Message>, viewerId: string) {
+  return serializeMessage(msg, viewerId, await listingCurrencies([msg.listingId]));
 }
 
 async function markDeliveredForViewer(conversationId: string, viewerId: string) {
@@ -206,40 +235,82 @@ export async function listConversations(userId: string) {
     .filter(Boolean) as string[];
 
   // Independent lookups run together; sequentially each one adds a database round trip.
-  const [users, me, soldCounts, reviewStats, onlineFlags] = await Promise.all([
-    User.find({ _id: { $in: otherIds } }),
-    User.findById(userId).select("blockedUsers").lean(),
-    Listing.aggregate<{ _id: mongoose.Types.ObjectId; n: number }>([
-      {
-        $match: {
-          seller: {
-            $in: otherIds
-              .filter((id) => mongoose.isValidObjectId(id))
-              .map((id) => new mongoose.Types.ObjectId(id)),
+  const [users, me, soldCounts, reviewStats, onlineFlags, lastMessages, currencyMap] =
+    await Promise.all([
+      User.find({ _id: { $in: otherIds } }),
+      User.findById(userId).select("blockedUsers").lean(),
+      Listing.aggregate<{ _id: mongoose.Types.ObjectId; n: number }>([
+        {
+          $match: {
+            seller: {
+              $in: otherIds
+                .filter((id) => mongoose.isValidObjectId(id))
+                .map((id) => new mongoose.Types.ObjectId(id)),
+            },
+            status: "sold",
           },
-          status: "sold",
         },
-      },
-      { $group: { _id: "$seller", n: { $sum: 1 } } },
-    ]),
-    Promise.all(
-      otherIds.map(async (id) => {
-        try {
-          const stats = await getSellerReviewStats(id);
-          return [id, stats] as const;
-        } catch {
-          return [id, { averageRating: 0, totalReviews: 0 }] as const;
-        }
-      }),
-    ),
-    Promise.all(
-      otherIds.map(async (id) => {
-        if (isUserOnline(id)) return [id, true] as const;
-        const redis = await isUserOnlineRedis(id);
-        return [id, redis === true] as const;
-      }),
-    ),
-  ]);
+        { $group: { _id: "$seller", n: { $sum: 1 } } },
+      ]),
+      Promise.all(
+        otherIds.map(async (id) => {
+          try {
+            const stats = await getSellerReviewStats(id);
+            return [id, stats] as const;
+          } catch {
+            return [id, { averageRating: 0, totalReviews: 0 }] as const;
+          }
+        }),
+      ),
+      Promise.all(
+        otherIds.map(async (id) => {
+          if (isUserOnline(id)) return [id, true] as const;
+          const redis = await isUserOnlineRedis(id);
+          return [id, redis === true] as const;
+        }),
+      ),
+      rows.length && mongoose.isValidObjectId(userId)
+        ? Message.aggregate<{
+            _id: mongoose.Types.ObjectId;
+            sender: mongoose.Types.ObjectId;
+            kind: string;
+            readBy: mongoose.Types.ObjectId[];
+            deliveredTo: mongoose.Types.ObjectId[];
+          }>([
+            {
+              $match: {
+                conversation: { $in: rows.map((c) => c._id) },
+                hiddenFor: { $ne: new mongoose.Types.ObjectId(userId) },
+              },
+            },
+            // Matches the { conversation, createdAt } index walked backwards.
+            { $sort: { conversation: -1, createdAt: -1 } },
+            {
+              $group: {
+                _id: "$conversation",
+                sender: { $first: "$sender" },
+                kind: { $first: "$kind" },
+                readBy: { $first: "$readBy" },
+                deliveredTo: { $first: "$deliveredTo" },
+              },
+            },
+          ])
+        : Promise.resolve([]),
+      listingCurrencies(rows.map((c) => c.listingId)),
+    ]);
+  const lastMessageMap = new Map(lastMessages.map((m) => [m._id.toString(), m]));
+  const lastMessageReceipt = (conversationId: string) => {
+    const last = lastMessageMap.get(conversationId);
+    if (!last || last.kind === "system") return { fromMe: false, status: null };
+    const senderId = last.sender.toString();
+    if (senderId !== userId) return { fromMe: false, status: null };
+    const read = (last.readBy || []).some((id) => id.toString() !== senderId);
+    const delivered = read || (last.deliveredTo || []).some((id) => id.toString() !== senderId);
+    return {
+      fromMe: true,
+      status: read ? ("read" as const) : delivered ? ("delivered" as const) : ("sent" as const),
+    };
+  };
   const userMap = new Map(users.map((u) => [u._id.toString(), u]));
   const blockedByMe = new Set((me?.blockedUsers || []).map((id) => String(id)));
   const soldMap = new Map(soldCounts.map((r) => [r._id.toString(), r.n]));
@@ -257,6 +328,7 @@ export async function listConversations(userId: string) {
       totalReviews: 0,
     };
     const itemsSold = soldMap.get(otherId) || 0;
+    const receipt = lastMessageReceipt(c._id.toString());
     return {
       id: c._id.toString(),
       name: other?.name || "User",
@@ -267,12 +339,13 @@ export async function listConversations(userId: string) {
       lastMessageAt: c.lastMessageAt ? new Date(c.lastMessageAt).toISOString() : null,
       time: formatListTime(c.lastMessageAt),
       unread,
+      /** Ticks for the inbox row, same rules as the thread: sent, delivered, read. */
+      lastMessageFromMe: receipt.fromMe,
+      lastMessageStatus: receipt.status,
       listing: {
         title: (c.listingTitle || "").trim() || "Conversation",
-        price:
-          c.listingPrice != null && Number(c.listingPrice) > 0
-            ? `₹${Number(c.listingPrice).toLocaleString("en-IN")}`
-            : "",
+        price: formatListingPrice(c.listingPrice, currencyMap.get(String(c.listingId || ""))),
+        currency: currencyMap.get(String(c.listingId || "")) || null,
         image: absolutizeMediaUrl(c.listingImage),
         href: sanitizeListingHref(c.listingHref),
       },
@@ -355,9 +428,10 @@ export async function getMessages(userId: string, conversationId: string) {
     .sort({ createdAt: -1 })
     .limit(200);
   latest.reverse();
+  const currencies = await listingCurrencies(latest.map((m) => m.listingId));
 
   return {
-    messages: latest.map((m) => serializeMessage(m, userId)),
+    messages: latest.map((m) => serializeMessage(m, userId, currencies)),
     readReceipt,
   };
 }
@@ -508,7 +582,7 @@ export async function sendMessage(
 
   return {
     conversationId: conversation._id.toString(),
-    message: serializeMessage(messageDoc, userId),
+    message: await serializeOne(messageDoc, userId),
     participantIds: conversation.participants.map((p) => p.toString()),
   };
 }
@@ -651,7 +725,7 @@ export async function startConversation(
     if (existing || !locked) {
       return {
         conversationId,
-        message: existing ? serializeMessage(existing, userId) : null,
+        message: existing ? await serializeOne(existing, userId) : null,
         participantIds: conversation.participants.map((p) => p.toString()),
         duplicate: true,
       };
@@ -717,7 +791,7 @@ export async function editMessage(userId: string, messageId: string, text: strin
 
   return {
     conversationId: conversation._id.toString(),
-    message: serializeMessage(message, userId),
+    message: await serializeOne(message, userId),
     participantIds: conversation.participants.map((p) => p.toString()),
   };
 }
@@ -758,7 +832,7 @@ export async function deleteMessage(userId: string, messageId: string) {
 
   return {
     conversationId: conversation._id.toString(),
-    message: serializeMessage(message, userId),
+    message: await serializeOne(message, userId),
     participantIds: conversation.participants.map((p) => p.toString()),
   };
 }

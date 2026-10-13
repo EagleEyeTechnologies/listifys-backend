@@ -4,7 +4,12 @@ import { asyncHandler } from "../../utils/asyncHandler.js";
 import { optionalAuth, requireAuth } from "../../middleware/auth.js";
 import { AppError } from "../../utils/AppError.js";
 import { User } from "./user.model.js";
-import { listLoginActivity } from "../auth/loginActivity.js";
+import {
+  listLoginActivity,
+  revokeAllLoginSessions,
+  revokeLoginSession,
+  revokeOtherLoginSessions,
+} from "../auth/loginActivity.js";
 import { browseListings, listMyListings, listQuerySchema } from "../listings/listing.service.js";
 import {
   listConnections,
@@ -30,6 +35,7 @@ import {
   cancelAccountDeletion,
   purgeExpiredAccountDeletions,
 } from "./users.service.js";
+import { reissueSession } from "../auth/auth.service.js";
 import { z } from "zod";
 import { sendFcmToTokens, fcmReady } from "../notifications/fcm.service.js";
 
@@ -55,6 +61,34 @@ usersRouter.get(
     const limit = Number(req.query.limit) || 20;
     const items = await listLoginActivity(req, req.userId!, limit);
     res.json({ success: true, data: { items } });
+  }),
+);
+
+usersRouter.post(
+  "/me/sessions/revoke-all",
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const revoked = await revokeAllLoginSessions(req.userId!);
+    res.json({ success: true, data: { revoked } });
+  }),
+);
+
+usersRouter.post(
+  "/me/sessions/revoke-others",
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const revoked = await revokeOtherLoginSessions(req.userId!, req.sessionId);
+    const tokens = await reissueSession(req.userId!, req.sessionId);
+    res.json({ success: true, data: { revoked, ...tokens } });
+  }),
+);
+
+usersRouter.post(
+  "/me/sessions/:id/revoke",
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    await revokeLoginSession(req.userId!, String(req.params.id || ""));
+    res.json({ success: true });
   }),
 );
 

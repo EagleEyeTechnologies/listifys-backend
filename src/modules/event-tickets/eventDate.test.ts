@@ -39,4 +39,21 @@ describe("event end time", () => {
     const legacy = { event: { startsAt: "2026-10-06T09:54", duration: "1 hour" } };
     expect(eventEndFromExtras(legacy, "IN")?.toISOString()).toBe("2026-10-06T05:24:00.000Z");
   });
+
+  it("uses the organizer's end time over the duration", () => {
+    const withEnd = {
+      event: {
+        startsAt: "2026-10-06T09:54",
+        endsAt: "2026-10-07T01:00",
+        duration: "1 hour",
+        utcOffsetMinutes: 330,
+      },
+    };
+    expect(eventEndFromExtras(withEnd)?.toISOString()).toBe("2026-10-06T19:30:00.000Z");
+  });
+
+  it("ignores an end time that is not after the start", () => {
+    const badEnd = { event: { ...extras.event, endsAt: "2026-10-06T08:00" } };
+    expect(eventEndFromExtras(badEnd)?.toISOString()).toBe("2026-10-06T05:24:00.000Z");
+  });
 });
