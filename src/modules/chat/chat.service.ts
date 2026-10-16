@@ -1,5 +1,7 @@
+import { createHash } from "node:crypto";
 import mongoose from "mongoose";
 import { z } from "zod";
+import { kv } from "../../redis/client.js";
 import { Conversation, makeParticipantKey } from "./conversation.model.js";
 import { Message } from "./message.model.js";
 import { User } from "../users/user.model.js";
@@ -7,11 +9,15 @@ import { Listing } from "../listings/listing.model.js";
 import { AppError } from "../../utils/AppError.js";
 import { listingHrefFromDoc } from "./listingHref.js";
 import { decryptChatText } from "./chat.crypto.js";
-import { createNotification } from "../notifications/notification.service.js";
+import {
+  createNotification,
+  markMessageNotificationsRead,
+} from "../notifications/notification.service.js";
 import { isUserOnline, isUserOnlineRedis } from "./presence.js";
 import { absolutizeMediaUrl } from "../../utils/mediaUrl.js";
 import { getSellerReviewStats } from "../reviews/reviews.service.js";
 import { chatListingSwitchMessage, chatOpeningMessage } from "./chatOpeningMessage.js";
+import { isEitherBlocked } from "../users/users.service.js";
 
 export const startConversationSchema = z.object({
   recipientId: z.string().min(1),
@@ -19,28 +25,36 @@ export const startConversationSchema = z.object({
   text: z.string().min(1).max(5000).optional(),
 });
 
-export const sendMessageSchema = z.object({
-  text: z.string().min(1).max(5000),
+const attachmentSchema = z.object({
+  url: z.string().min(1).max(2000),
+  name: z.string().max(200).optional(),
+  mime: z.string().max(120).optional(),
 });
+
+export const sendMessageSchema = z
+  .object({
+    text: z.string().max(5000).optional().default(""),
+    attachments: z.array(attachmentSchema).max(4).optional(),
+    replyToId: z.string().max(64).optional(),
+  })
+  .refine((value) => value.text.trim().length > 0 || (value.attachments?.length || 0) > 0, {
+    message: "Message is empty",
+  });
 
 export const editMessageSchema = z.object({
   text: z.string().min(1).max(5000),
 });
 
-/** Relative list time — ms diffs are timezone-safe. */
+/** Inbox date: Today, Yesterday, or a short calendar day. Clients reformat with lastMessageAt. */
 function formatListTime(date?: Date | null) {
   if (!date) return "";
-  const diff = Date.now() - date.getTime();
-  const mins = Math.floor(diff / 60000);
-  if (mins < 60) return `${Math.max(1, mins)}m`;
-  const hours = Math.floor(mins / 60);
-  if (hours < 24) return `${hours}h`;
-  // Absolute calendar day in the viewer's locale is applied on clients when needed;
-  // list preview stays relative / short date from the Instant.
-  return new Intl.DateTimeFormat(undefined, {
-    month: "short",
-    day: "numeric",
-  }).format(date);
+  const day = new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
+  const today = new Date();
+  const todayStart = new Date(today.getFullYear(), today.getMonth(), today.getDate()).getTime();
+  const diffDays = Math.round((todayStart - day) / 86400000);
+  if (diffDays === 0) return "Today";
+  if (diffDays === 1) return "Yesterday";
+  return new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric" }).format(date);
 }
 
 function memberSinceYear(createdAt?: Date | null): string {
@@ -72,7 +86,34 @@ function sanitizeListingHref(href?: string | null) {
   });
 }
 
-export function serializeMessage(msg: InstanceType<typeof Message>, viewerId: string) {
+function formatListingPrice(price: unknown, currency?: string | null) {
+  const amount = Number(price);
+  if (!Number.isFinite(amount) || amount <= 0) return "";
+  const code = String(currency || "INR")
+    .trim()
+    .toUpperCase();
+  const locale = code === "INR" ? "en-IN" : code === "CAD" ? "en-CA" : "en-US";
+  const symbol = code === "INR" ? "₹" : code === "CAD" ? "C$" : "$";
+  return `${symbol}${amount.toLocaleString(locale)}`;
+}
+
+/** Listing id → ISO currency. Conversations and listing cards only store the price. */
+async function listingCurrencies(ids: (mongoose.Types.ObjectId | string | null | undefined)[]) {
+  const unique = [...new Set(ids.map((id) => (id ? String(id) : "")).filter(Boolean))].filter(
+    (id) => mongoose.isValidObjectId(id),
+  );
+  if (!unique.length) return new Map<string, string>();
+  const docs = await Listing.find({ _id: { $in: unique } })
+    .select("currency")
+    .lean<{ _id: mongoose.Types.ObjectId; currency?: string }[]>();
+  return new Map(docs.map((d) => [d._id.toString(), String(d.currency || "INR")]));
+}
+
+export function serializeMessage(
+  msg: InstanceType<typeof Message>,
+  viewerId: string,
+  currencies?: Map<string, string>,
+) {
   const senderId = msg.sender.toString();
   const mine = senderId === viewerId;
   const createdAt =
@@ -82,13 +123,22 @@ export function serializeMessage(msg: InstanceType<typeof Message>, viewerId: st
   const readByPeer = (msg.readBy || []).some((id) => id.toString() !== senderId);
   const deliveredToPeer =
     readByPeer || (msg.deliveredTo || []).some((id) => id.toString() !== senderId);
+  const attachments = (msg.deletedAt ? [] : msg.attachments || [])
+    .map((file) => ({
+      url: absolutizeMediaUrl(String(file.url || "")),
+      name: String(file.name || ""),
+      mime: String(file.mime || ""),
+    }))
+    .filter((file) => file.url);
   const listingId = msg.listingId?.toString?.() || null;
   const listingTitle = (msg.listingTitle || "").trim();
+  const reply = msg.replyTo?.messageId ? msg.replyTo : null;
   return {
     id: msg._id.toString(),
     kind: msg.kind === "system" ? "system" : "text",
     from: mine ? "me" : "them",
     text: deleted ? "This message was deleted" : decryptChatText(msg.text),
+    attachments,
     /** Prefer clients formatting `createdAt` in the user's local timezone. */
     time: "",
     createdAt: createdAt.toISOString(),
@@ -99,20 +149,32 @@ export function serializeMessage(msg: InstanceType<typeof Message>, viewerId: st
     edited,
     deleted,
     editedAt: msg.editedAt ? new Date(msg.editedAt).toISOString() : null,
+    replyTo:
+      reply && !deleted
+        ? {
+            id: reply.messageId.toString(),
+            from: reply.sender.toString() === viewerId ? ("me" as const) : ("them" as const),
+            text: reply.deleted ? "" : decryptChatText(reply.text),
+            hasImage: Boolean(reply.hasImage) && !reply.deleted,
+            deleted: Boolean(reply.deleted),
+          }
+        : null,
     listingId,
     listing: listingId
       ? {
           id: listingId,
           title: listingTitle || "Listing",
-          price:
-            msg.listingPrice != null && Number(msg.listingPrice) > 0
-              ? `₹${Number(msg.listingPrice).toLocaleString("en-IN")}`
-              : "",
+          price: formatListingPrice(msg.listingPrice, currencies?.get(listingId)),
+          currency: currencies?.get(listingId) || null,
           image: absolutizeMediaUrl(msg.listingImage),
           href: sanitizeListingHref(msg.listingHref),
         }
       : null,
   };
+}
+
+async function serializeOne(msg: InstanceType<typeof Message>, viewerId: string) {
+  return serializeMessage(msg, viewerId, await listingCurrencies([msg.listingId]));
 }
 
 async function markDeliveredForViewer(conversationId: string, viewerId: string) {
@@ -127,7 +189,10 @@ async function markDeliveredForViewer(conversationId: string, viewerId: string) 
 }
 
 export async function listConversations(userId: string) {
-  const rows = await Conversation.find({ participants: userId })
+  const rows = await Conversation.find({
+    participants: userId,
+    hiddenFor: { $ne: userId },
+  })
     .sort({ lastMessageAt: -1, updatedAt: -1 })
     .limit(100);
 
@@ -169,43 +234,87 @@ export async function listConversations(userId: string) {
     .map((c) => c.participants.map((p) => p.toString()).find((id) => id !== userId))
     .filter(Boolean) as string[];
 
-  const users = await User.find({ _id: { $in: otherIds } });
-  const userMap = new Map(users.map((u) => [u._id.toString(), u]));
-
-  const soldCounts = await Listing.aggregate<{ _id: mongoose.Types.ObjectId; n: number }>([
-    {
-      $match: {
-        seller: {
-          $in: otherIds
-            .filter((id) => mongoose.isValidObjectId(id))
-            .map((id) => new mongoose.Types.ObjectId(id)),
+  // Independent lookups run together; sequentially each one adds a database round trip.
+  const [users, me, soldCounts, reviewStats, onlineFlags, lastMessages, currencyMap] =
+    await Promise.all([
+      User.find({ _id: { $in: otherIds } }),
+      User.findById(userId).select("blockedUsers").lean(),
+      Listing.aggregate<{ _id: mongoose.Types.ObjectId; n: number }>([
+        {
+          $match: {
+            seller: {
+              $in: otherIds
+                .filter((id) => mongoose.isValidObjectId(id))
+                .map((id) => new mongoose.Types.ObjectId(id)),
+            },
+            status: "sold",
+          },
         },
-        status: "sold",
-      },
-    },
-    { $group: { _id: "$seller", n: { $sum: 1 } } },
-  ]);
+        { $group: { _id: "$seller", n: { $sum: 1 } } },
+      ]),
+      Promise.all(
+        otherIds.map(async (id) => {
+          try {
+            const stats = await getSellerReviewStats(id);
+            return [id, stats] as const;
+          } catch {
+            return [id, { averageRating: 0, totalReviews: 0 }] as const;
+          }
+        }),
+      ),
+      Promise.all(
+        otherIds.map(async (id) => {
+          if (isUserOnline(id)) return [id, true] as const;
+          const redis = await isUserOnlineRedis(id);
+          return [id, redis === true] as const;
+        }),
+      ),
+      rows.length && mongoose.isValidObjectId(userId)
+        ? Message.aggregate<{
+            _id: mongoose.Types.ObjectId;
+            sender: mongoose.Types.ObjectId;
+            kind: string;
+            readBy: mongoose.Types.ObjectId[];
+            deliveredTo: mongoose.Types.ObjectId[];
+          }>([
+            {
+              $match: {
+                conversation: { $in: rows.map((c) => c._id) },
+                hiddenFor: { $ne: new mongoose.Types.ObjectId(userId) },
+              },
+            },
+            // Matches the { conversation, createdAt } index walked backwards.
+            { $sort: { conversation: -1, createdAt: -1 } },
+            {
+              $group: {
+                _id: "$conversation",
+                sender: { $first: "$sender" },
+                kind: { $first: "$kind" },
+                readBy: { $first: "$readBy" },
+                deliveredTo: { $first: "$deliveredTo" },
+              },
+            },
+          ])
+        : Promise.resolve([]),
+      listingCurrencies(rows.map((c) => c.listingId)),
+    ]);
+  const lastMessageMap = new Map(lastMessages.map((m) => [m._id.toString(), m]));
+  const lastMessageReceipt = (conversationId: string) => {
+    const last = lastMessageMap.get(conversationId);
+    if (!last || last.kind === "system") return { fromMe: false, status: null };
+    const senderId = last.sender.toString();
+    if (senderId !== userId) return { fromMe: false, status: null };
+    const read = (last.readBy || []).some((id) => id.toString() !== senderId);
+    const delivered = read || (last.deliveredTo || []).some((id) => id.toString() !== senderId);
+    return {
+      fromMe: true,
+      status: read ? ("read" as const) : delivered ? ("delivered" as const) : ("sent" as const),
+    };
+  };
+  const userMap = new Map(users.map((u) => [u._id.toString(), u]));
+  const blockedByMe = new Set((me?.blockedUsers || []).map((id) => String(id)));
   const soldMap = new Map(soldCounts.map((r) => [r._id.toString(), r.n]));
-
-  const reviewStats = await Promise.all(
-    otherIds.map(async (id) => {
-      try {
-        const stats = await getSellerReviewStats(id);
-        return [id, stats] as const;
-      } catch {
-        return [id, { averageRating: 0, totalReviews: 0 }] as const;
-      }
-    }),
-  );
   const reviewMap = new Map(reviewStats);
-
-  const onlineFlags = await Promise.all(
-    otherIds.map(async (id) => {
-      if (isUserOnline(id)) return [id, true] as const;
-      const redis = await isUserOnlineRedis(id);
-      return [id, redis === true] as const;
-    }),
-  );
   const onlineMap = new Map(onlineFlags);
 
   const conversations = rows.map((c) => {
@@ -219,6 +328,7 @@ export async function listConversations(userId: string) {
       totalReviews: 0,
     };
     const itemsSold = soldMap.get(otherId) || 0;
+    const receipt = lastMessageReceipt(c._id.toString());
     return {
       id: c._id.toString(),
       name: other?.name || "User",
@@ -226,18 +336,23 @@ export async function listConversations(userId: string) {
       online: otherId ? Boolean(onlineMap.get(otherId)) : false,
       verified: false,
       lastMessage: decryptChatText(c.lastMessageText || ""),
+      lastMessageAt: c.lastMessageAt ? new Date(c.lastMessageAt).toISOString() : null,
       time: formatListTime(c.lastMessageAt),
       unread,
+      /** Ticks for the inbox row, same rules as the thread: sent, delivered, read. */
+      lastMessageFromMe: receipt.fromMe,
+      lastMessageStatus: receipt.status,
       listing: {
         title: (c.listingTitle || "").trim() || "Conversation",
-        price:
-          c.listingPrice != null && Number(c.listingPrice) > 0
-            ? `₹${Number(c.listingPrice).toLocaleString("en-IN")}`
-            : "",
+        price: formatListingPrice(c.listingPrice, currencyMap.get(String(c.listingId || ""))),
+        currency: currencyMap.get(String(c.listingId || "")) || null,
         image: absolutizeMediaUrl(c.listingImage),
         href: sanitizeListingHref(c.listingHref),
       },
       participantId: otherId,
+      blockedByMe: blockedByMe.has(otherId),
+      blocked:
+        blockedByMe.has(otherId) || (other?.blockedUsers || []).some((id) => String(id) === userId),
       seller: {
         rating: Number(reviews.averageRating) || 0,
         reviews: Number(reviews.totalReviews) || 0,
@@ -254,7 +369,7 @@ export async function listConversations(userId: string) {
   return { conversations, deliveryReceipt };
 }
 
-export async function getMessages(userId: string, conversationId: string) {
+async function findConversationForParticipant(userId: string, conversationId: string) {
   if (!mongoose.isValidObjectId(conversationId)) {
     throw new AppError(404, "Conversation not found", "NOT_FOUND");
   }
@@ -262,7 +377,12 @@ export async function getMessages(userId: string, conversationId: string) {
   if (!conversation || !conversation.participants.some((p) => p.toString() === userId)) {
     throw new AppError(404, "Conversation not found", "NOT_FOUND");
   }
+  return conversation;
+}
 
+/** Marks everything the peer sent as delivered + read and clears this user's unread count. */
+async function markReadForViewer(userId: string, conversation: InstanceType<typeof Conversation>) {
+  const conversationId = conversation._id.toString();
   await markDeliveredForViewer(conversationId, userId);
 
   const unreadFromOthers = await Message.find({
@@ -279,31 +399,59 @@ export async function getMessages(userId: string, conversationId: string) {
     },
     { $addToSet: { readBy: userId, deliveredTo: userId } },
   );
-  if (conversation.unreadBy) {
+  const hadUnread = Number(conversation.unreadBy?.get?.(userId) || 0) > 0;
+  if (conversation.unreadBy && hadUnread) {
     conversation.unreadBy.set(userId, 0);
     await conversation.save();
   }
 
-  const fresh = await Message.find({ conversation: conversationId })
-    .sort({ createdAt: 1 })
-    .limit(200);
+  try {
+    await markMessageNotificationsRead(userId, conversationId);
+  } catch {
+    /* opening the thread still succeeds if notification cleanup fails */
+  }
 
   return {
-    messages: fresh.map((m) => serializeMessage(m, userId)),
-    readReceipt: {
-      conversationId,
-      readerId: userId,
-      messageIds: unreadFromOthers.map((m) => m._id.toString()),
-      participantIds: conversation.participants.map((p) => p.toString()),
-    },
+    conversationId,
+    readerId: userId,
+    messageIds: unreadFromOthers.map((m) => m._id.toString()),
+    participantIds: conversation.participants.map((p) => p.toString()),
+    hadUnread,
   };
+}
+
+export async function getMessages(userId: string, conversationId: string) {
+  const conversation = await findConversationForParticipant(userId, conversationId);
+  const readReceipt = await markReadForViewer(userId, conversation);
+
+  const latest = await Message.find({ conversation: conversationId, hiddenFor: { $ne: userId } })
+    .sort({ createdAt: -1 })
+    .limit(200);
+  latest.reverse();
+  const currencies = await listingCurrencies(latest.map((m) => m.listingId));
+
+  return {
+    messages: latest.map((m) => serializeMessage(m, userId, currencies)),
+    readReceipt,
+  };
+}
+
+/** Called while a thread is on screen, so messages that arrive in realtime get read ticks too. */
+export async function markConversationRead(userId: string, conversationId: string) {
+  const conversation = await findConversationForParticipant(userId, conversationId);
+  return markReadForViewer(userId, conversation);
 }
 
 export async function sendMessage(
   userId: string,
   conversationId: string,
   text: string,
-  opts?: { kind?: "text" | "system"; createdAt?: Date },
+  opts?: {
+    kind?: "text" | "system";
+    createdAt?: Date;
+    attachments?: { url: string; name?: string; mime?: string }[];
+    replyToId?: string;
+  },
 ) {
   if (!mongoose.isValidObjectId(conversationId)) {
     throw new AppError(404, "Conversation not found", "NOT_FOUND");
@@ -313,13 +461,69 @@ export async function sendMessage(
     throw new AppError(404, "Conversation not found", "NOT_FOUND");
   }
 
+  const otherId = conversation.participants.map((p) => p.toString()).find((id) => id !== userId);
+  if (otherId && (await isEitherBlocked(userId, otherId))) {
+    throw new AppError(403, "You can't message this user", "BLOCKED");
+  }
+
   const kind = opts?.kind === "system" ? "system" : "text";
   const storedText = text.trim();
+  const attachments = (opts?.attachments || [])
+    .filter((file) => file.url.trim())
+    .slice(0, 4)
+    .map((file) => ({
+      url: file.url.trim(),
+      name: (file.name || "").trim(),
+      mime: (file.mime || "").trim(),
+    }));
+  if (!storedText && !attachments.length) {
+    throw new AppError(400, "Message is empty", "VALIDATION_ERROR");
+  }
+  const hasPdf = attachments.some(
+    (file) => file.mime === "application/pdf" || /\.pdf$/i.test(file.url),
+  );
+  const preview = storedText || (attachments.length ? (hasPdf ? "PDF" : "Photo") : "");
+
+  let replyTo: {
+    messageId: mongoose.Types.ObjectId;
+    sender: mongoose.Types.ObjectId;
+    text: string;
+    hasImage: boolean;
+  } | null = null;
+  if (opts?.replyToId && kind === "text") {
+    if (!mongoose.isValidObjectId(opts.replyToId)) {
+      throw new AppError(400, "Reply target not found", "VALIDATION_ERROR");
+    }
+    const quoted = await Message.findOne({
+      _id: opts.replyToId,
+      conversation: conversation._id,
+      kind: "text",
+      deletedAt: null,
+    });
+    if (!quoted) {
+      throw new AppError(400, "Reply target not found", "VALIDATION_ERROR");
+    }
+    const quotedFiles = quoted.attachments || [];
+    const quotedText = decryptChatText(quoted.text);
+    const placeholderOnly =
+      quotedFiles.length > 0 && (quotedText === "Photo" || quotedText === "PDF");
+    replyTo = {
+      messageId: quoted._id,
+      sender: quoted.sender,
+      text: placeholderOnly ? "" : quotedText.slice(0, 300),
+      hasImage: quotedFiles.some(
+        (file) => file.mime !== "application/pdf" && !/\.pdf($|\?)/i.test(String(file.url)),
+      ),
+    };
+  }
+
   const message = await Message.create({
     conversation: conversation._id,
     sender: userId,
     text: storedText,
+    attachments,
     kind,
+    replyTo,
     readBy: [userId],
     deliveredTo: [userId],
     listingId: conversation.listingId || null,
@@ -330,14 +534,17 @@ export async function sendMessage(
     ...(opts?.createdAt ? { createdAt: opts.createdAt, updatedAt: opts.createdAt } : {}),
   });
 
-  conversation.lastMessageText = storedText;
+  conversation.lastMessageText = preview;
   conversation.lastMessageAt = new Date();
+  if (conversation.hiddenFor?.length) {
+    conversation.hiddenFor = [];
+  }
   const recipients: string[] = [];
   for (const p of conversation.participants) {
     const pid = p.toString();
     if (pid === userId) {
       conversation.unreadBy?.set(pid, 0);
-    } else {
+    } else if (kind === "text") {
       const prev = Number(conversation.unreadBy?.get?.(pid) || 0);
       conversation.unreadBy?.set(pid, prev + 1);
       recipients.push(pid);
@@ -366,7 +573,7 @@ export async function sendMessage(
         userId: rid,
         type: "message",
         title: `New message from ${sender?.name || "Someone"}`,
-        body: text.slice(0, 140),
+        body: preview.slice(0, 140),
         href: `/messages?c=${conversation._id.toString()}`,
         image: absolutizeMediaUrl(sender?.avatar),
       });
@@ -375,9 +582,30 @@ export async function sendMessage(
 
   return {
     conversationId: conversation._id.toString(),
-    message: serializeMessage(messageDoc, userId),
+    message: await serializeOne(messageDoc, userId),
     participantIds: conversation.participants.map((p) => p.toString()),
   };
+}
+
+const DUPLICATE_REQUEST_WINDOW_MS = 24 * 60 * 60 * 1000;
+
+function hashText(text: string) {
+  return createHash("sha1").update(text.trim().toLowerCase()).digest("hex").slice(0, 16);
+}
+
+/** Same text from the same sender in this thread within the window (message text is encrypted at rest). */
+async function findRecentDuplicate(conversationId: string, senderId: string, text: string) {
+  const needle = text.trim().toLowerCase();
+  const recent = await Message.find({
+    conversation: conversationId,
+    sender: senderId,
+    kind: { $ne: "system" },
+    deletedAt: null,
+    createdAt: { $gte: new Date(Date.now() - DUPLICATE_REQUEST_WINDOW_MS) },
+  })
+    .sort({ createdAt: -1 })
+    .limit(20);
+  return recent.find((m) => decryptChatText(m.text).trim().toLowerCase() === needle) ?? null;
 }
 
 export async function startConversation(
@@ -461,11 +689,9 @@ export async function startConversation(
 
   // Listing context card BEFORE the opening text (stable ordering).
   if (listingMeta.listingId && (isNew || listingChanged)) {
-    // Place just after any prior messages, but before the opener we send next.
-    const base = conversation.lastMessageAt
-      ? new Date(conversation.lastMessageAt).getTime()
-      : Date.now() - 40;
-    const tCard = new Date(Math.min(base + 10, Date.now() - 20));
+    // Stamped just before the opener we send next, so it falls on the same day as that chat.
+    const last = conversation.lastMessageAt ? new Date(conversation.lastMessageAt).getTime() : 0;
+    const tCard = new Date(Math.max(last + 1, Date.now() - 20));
     await sendMessage(userId, conversationId, chatListingSwitchMessage(listingMeta.listingTitle), {
       kind: "system",
       createdAt: tCard,
@@ -491,10 +717,26 @@ export async function startConversation(
   const textToSend = isGenericOpener ? categoryAware || rawText : rawText;
 
   if (textToSend) {
-    const sent = await sendMessage(userId, conversationId, textToSend, {
-      createdAt: new Date(Date.now()),
-    });
-    return sent;
+    // Listing buttons (book, offer, message) must not post the same request twice when
+    // tapped repeatedly; the lock covers concurrent taps, the lookup covers later ones.
+    const lockKey = `chat:start:${conversationId}:${userId}:${hashText(textToSend)}`;
+    const locked = await kv.setIfAbsent(lockKey, "1", 15).catch(() => true);
+    const existing = await findRecentDuplicate(conversationId, userId, textToSend);
+    if (existing || !locked) {
+      return {
+        conversationId,
+        message: existing ? await serializeOne(existing, userId) : null,
+        participantIds: conversation.participants.map((p) => p.toString()),
+        duplicate: true,
+      };
+    }
+    try {
+      return await sendMessage(userId, conversationId, textToSend, {
+        createdAt: new Date(Date.now()),
+      });
+    } finally {
+      void kv.del(lockKey).catch(() => undefined);
+    }
   }
 
   return {
@@ -549,7 +791,7 @@ export async function editMessage(userId: string, messageId: string, text: strin
 
   return {
     conversationId: conversation._id.toString(),
-    message: serializeMessage(message, userId),
+    message: await serializeOne(message, userId),
     participantIds: conversation.participants.map((p) => p.toString()),
   };
 }
@@ -572,8 +814,13 @@ export async function deleteMessage(userId: string, messageId: string) {
   }
 
   message.deletedAt = new Date();
-  message.text = "";
+  // Schema requires non-empty text. Clients show “This message was deleted” when deletedAt is set.
+  message.text = "deleted";
   await message.save();
+  await Message.updateMany(
+    { conversation: conversation._id, "replyTo.messageId": message._id },
+    { $set: { "replyTo.text": "", "replyTo.hasImage": false, "replyTo.deleted": true } },
+  );
 
   const latest = await Message.findOne({ conversation: conversation._id })
     .sort({ createdAt: -1 })
@@ -585,9 +832,27 @@ export async function deleteMessage(userId: string, messageId: string) {
 
   return {
     conversationId: conversation._id.toString(),
-    message: serializeMessage(message, userId),
+    message: await serializeOne(message, userId),
     participantIds: conversation.participants.map((p) => p.toString()),
   };
+}
+
+/** "Delete for me": only this user stops seeing the message; the peer's copy is untouched. */
+export async function hideMessage(userId: string, messageId: string) {
+  if (!mongoose.isValidObjectId(messageId)) {
+    throw new AppError(404, "Message not found", "NOT_FOUND");
+  }
+  const message = await Message.findById(messageId);
+  if (!message) throw new AppError(404, "Message not found", "NOT_FOUND");
+  if (message.kind === "system") {
+    throw new AppError(400, "System messages cannot be deleted", "VALIDATION_ERROR");
+  }
+  const conversation = await findConversationForParticipant(
+    userId,
+    message.conversation.toString(),
+  );
+  await Message.updateOne({ _id: message._id }, { $addToSet: { hiddenFor: userId } });
+  return { conversationId: conversation._id.toString(), messageId };
 }
 
 export async function deleteConversation(userId: string, conversationId: string) {
@@ -598,10 +863,14 @@ export async function deleteConversation(userId: string, conversationId: string)
   if (!conversation || !conversation.participants.some((p) => p.toString() === userId)) {
     throw new AppError(404, "Conversation not found", "NOT_FOUND");
   }
-  // Soft-hide for this user by clearing their unread and removing them is too destructive
-  // for a shared thread. Delete the whole thread only if both would agree — for now,
-  // remove the conversation document and its messages (participant-initiated clear).
-  await Message.deleteMany({ conversation: conversation._id });
-  await Conversation.deleteOne({ _id: conversation._id });
+  const alreadyHidden = (conversation.hiddenFor || []).some((id) => id.toString() === userId);
+  if (!alreadyHidden) {
+    conversation.hiddenFor = [
+      ...(conversation.hiddenFor || []),
+      new mongoose.Types.ObjectId(userId),
+    ];
+  }
+  conversation.unreadBy?.set(userId, 0);
+  await conversation.save();
   return { ok: true as const };
 }

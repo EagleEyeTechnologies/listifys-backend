@@ -4,13 +4,17 @@ import { asyncHandler } from "../../utils/asyncHandler.js";
 import { requireAuth } from "../../middleware/auth.js";
 import { AppError } from "../../utils/AppError.js";
 import { env } from "../../config/env.js";
-import { Listing } from "../listings/listing.model.js";
 import {
   confirmFreeBooking,
   createPendingTicketCheckout,
+  cancelPendingTicketBooking,
   getBookingForUser,
   getMyBookings,
   getOrganizerBookings,
+  organizerCancelBooking,
+  organizerCheckIn,
+  organizerResolveWithdrawal,
+  quoteTickets,
   requestBookingWithdrawal,
   serializeBooking,
 } from "./eventTickets.service.js";
@@ -18,6 +22,7 @@ import {
   createRazorpayOrder,
   createStripePaymentIntent,
   paymentConfigFor,
+  paymentCountryForCharge,
 } from "../payments/payments.service.js";
 import {
   confirmRazorpayPayment,
@@ -28,6 +33,7 @@ export const eventTicketsRouter = Router();
 
 const bookSchema = z.object({
   ticketQuantity: z.coerce.number().int().min(1).max(50),
+  ticketTierId: z.string().max(80).optional(),
   attendeeName: z.string().max(120).optional(),
   attendeePhone: z.string().max(40).optional(),
   notes: z.string().max(500).optional(),
@@ -52,6 +58,18 @@ eventTicketsRouter.get(
 );
 
 eventTicketsRouter.post(
+  "/my-bookings/:bookingId/cancel",
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const booking = await cancelPendingTicketBooking(
+      String(req.userId),
+      String(req.params.bookingId),
+    );
+    res.json({ success: true, data: booking });
+  }),
+);
+
+eventTicketsRouter.post(
   "/my-bookings/:bookingId/withdraw",
   requireAuth,
   asyncHandler(async (req, res) => {
@@ -62,7 +80,12 @@ eventTicketsRouter.post(
     });
     res.json({
       success: true,
-      message: "Withdrawal request sent to the organizer.",
+      message:
+        booking.status === "withdraw_requested"
+          ? "Withdrawal request sent to the organizer."
+          : booking.status === "refunded"
+            ? "Booking cancelled. Your refund is on its way."
+            : "Booking cancelled.",
       data: booking,
     });
   }),
@@ -124,8 +147,56 @@ eventTicketsRouter.get(
   "/:listingId/bookings",
   requireAuth,
   asyncHandler(async (req, res) => {
-    const items = await getOrganizerBookings(String(req.params.listingId), String(req.userId));
-    res.json({ success: true, data: { items } });
+    const data = await getOrganizerBookings(String(req.params.listingId), String(req.userId));
+    res.json({ success: true, data });
+  }),
+);
+
+const organizerNoteSchema = z.object({ reason: z.string().max(500).optional() });
+
+eventTicketsRouter.post(
+  "/organizer/bookings/:bookingId/cancel",
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const body = organizerNoteSchema.safeParse(req.body || {});
+    if (!body.success) throw new AppError(400, "Invalid payload", "VALIDATION_ERROR");
+    const data = await organizerCancelBooking({
+      userId: String(req.userId),
+      bookingId: String(req.params.bookingId),
+      reason: body.data.reason,
+    });
+    res.json({ success: true, data });
+  }),
+);
+
+eventTicketsRouter.post(
+  "/organizer/bookings/:bookingId/withdrawal",
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const body = z
+      .object({ approve: z.boolean(), note: z.string().max(500).optional() })
+      .safeParse(req.body);
+    if (!body.success) throw new AppError(400, "Invalid payload", "VALIDATION_ERROR");
+    const data = await organizerResolveWithdrawal({
+      userId: String(req.userId),
+      bookingId: String(req.params.bookingId),
+      approve: body.data.approve,
+      note: body.data.note,
+    });
+    res.json({ success: true, data });
+  }),
+);
+
+eventTicketsRouter.post(
+  "/organizer/bookings/:bookingId/check-in",
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const data = await organizerCheckIn({
+      userId: String(req.userId),
+      bookingId: String(req.params.bookingId),
+      undo: Boolean(req.body?.undo),
+    });
+    res.json({ success: true, data });
   }),
 );
 
@@ -163,14 +234,11 @@ eventTicketsRouter.post(
     }
 
     const listingId = String(req.params.listingId);
-    const listing = await Listing.findById(listingId).select(
-      "price category status currency countryCode",
-    );
-    if (!listing || listing.category !== "events" || listing.status === "removed") {
-      throw new AppError(404, "Event listing not found", "NOT_FOUND");
-    }
+    const qty = parsed.data.ticketQuantity;
+    const quote = await quoteTickets(listingId, parsed.data.ticketTierId, qty);
+    const listing = quote.listing;
 
-    if (Number(listing.price || 0) <= 0) {
+    if (quote.unitPrice <= 0) {
       const result = await confirmFreeBooking({
         userId: String(req.userId),
         listingId,
@@ -186,7 +254,10 @@ eventTicketsRouter.post(
       return;
     }
 
-    const cfg = paymentConfigFor(req.countryCode);
+    const currency = (listing.currency || "USD").toUpperCase();
+    const cfg = paymentConfigFor(
+      paymentCountryForCharge(currency, listing.countryCode, req.countryCode),
+    );
     if (!cfg.provider) {
       throw new AppError(
         503,
@@ -195,9 +266,7 @@ eventTicketsRouter.post(
       );
     }
 
-    const qty = parsed.data.ticketQuantity;
-    const amountMinor = Math.round(Number(listing.price) * qty * 100);
-    const currency = (listing.currency || "USD").toUpperCase();
+    const amountMinor = Math.round(quote.totalMajor * 100);
 
     if (cfg.provider === "razorpay") {
       const order = await createRazorpayOrder({
@@ -214,6 +283,7 @@ eventTicketsRouter.post(
         userId: String(req.userId),
         listingId,
         ticketQuantity: qty,
+        ticketTierId: parsed.data.ticketTierId,
         attendeeName: parsed.data.attendeeName,
         attendeePhone: parsed.data.attendeePhone,
         notes: parsed.data.notes,
@@ -257,6 +327,7 @@ eventTicketsRouter.post(
       userId: String(req.userId),
       listingId,
       ticketQuantity: qty,
+      ticketTierId: parsed.data.ticketTierId,
       attendeeName: parsed.data.attendeeName,
       attendeePhone: parsed.data.attendeePhone,
       notes: parsed.data.notes,

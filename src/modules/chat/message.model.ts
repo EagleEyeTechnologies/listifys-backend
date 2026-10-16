@@ -15,9 +15,22 @@ const messageSchema = new Schema(
     },
     text: {
       type: String,
-      required: true,
       trim: true,
       maxlength: 5000,
+      default: "",
+    },
+    attachments: {
+      type: [
+        new Schema(
+          {
+            url: { type: String, required: true, trim: true },
+            name: { type: String, trim: true, default: "" },
+            mime: { type: String, trim: true, default: "" },
+          },
+          { _id: false },
+        ),
+      ],
+      default: [],
     },
     kind: {
       type: String,
@@ -45,6 +58,26 @@ const messageSchema = new Schema(
     listingImage: { type: String, default: "" },
     listingPrice: { type: Number, default: null },
     listingHref: { type: String, default: "" },
+    /** Snapshot of the quoted message; text is cleared if the original is deleted for everyone. */
+    replyTo: {
+      type: new Schema(
+        {
+          messageId: { type: Schema.Types.ObjectId, ref: "Message", required: true },
+          sender: { type: Schema.Types.ObjectId, ref: "User", required: true },
+          text: { type: String, default: "" },
+          hasImage: { type: Boolean, default: false },
+          deleted: { type: Boolean, default: false },
+        },
+        { _id: false },
+      ),
+      default: null,
+    },
+    /** "Delete for me": hidden only for these users. */
+    hiddenFor: {
+      type: [Schema.Types.ObjectId],
+      ref: "User",
+      default: [],
+    },
     editedAt: { type: Date, default: null },
     deletedAt: { type: Date, default: null },
   },

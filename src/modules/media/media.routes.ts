@@ -1,4 +1,4 @@
-import { PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
+import { GetObjectCommand, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import express, { Router } from "express";
 import { z } from "zod";
@@ -30,7 +30,7 @@ legacyImagesRouter.use((req, res) => {
 const presignSchema = z.object({
   contentType: z.string().min(3).max(100),
   ext: z.string().min(1).max(10).optional(),
-  folder: z.enum(["listings", "profiles"]).optional(),
+  folder: z.enum(["listings", "profiles", "chats"]).optional(),
 });
 
 export { s3Configured };
@@ -54,6 +54,8 @@ function publicUrlForKey(key: string, uploadUrl?: string) {
 }
 
 function normalizeExt(raw: string | undefined, contentType: string) {
+  if (contentType === "video/quicktime") return "mov";
+  if (contentType === "video/mp4") return "mp4";
   const fromType = contentType.split("/")[1]?.split(";")[0]?.trim();
   const ext = (raw || fromType || "jpg").toLowerCase().replace(/[^a-z0-9]/g, "");
   if (!ext || ext.length > 5) return "jpg";
@@ -105,6 +107,72 @@ mediaRouter.post(
   }),
 );
 
+/** S3 key for a URL inside our own bucket; anything else is refused. */
+function ownBucketKey(raw: string): string | null {
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    return null;
+  }
+  const bases = [
+    env.AWS_S3_BUCKET_URL,
+    `https://${env.AWS_S3_BUCKET_NAME}.s3.${env.AWS_REGION}.amazonaws.com`,
+    `https://${env.AWS_S3_BUCKET_NAME}.s3.amazonaws.com`,
+  ].filter((base): base is string => Boolean(base));
+  for (const base of bases) {
+    let root: URL;
+    try {
+      root = new URL(base);
+    } catch {
+      continue;
+    }
+    const prefix = `${root.pathname.replace(/\/$/, "")}/`;
+    if (url.host !== root.host || !url.pathname.startsWith(prefix)) continue;
+    const key = decodeURIComponent(url.pathname.slice(prefix.length));
+    if (!key || key.includes("..")) return null;
+    return key;
+  }
+  return null;
+}
+
+const imageProxySchema = z.object({ url: z.string().min(8).max(2000) });
+
+/**
+ * Same-origin copy of one of our own listing photos. Browsers can't read S3 pixels into a
+ * canvas without bucket CORS, and the crop editor needs them.
+ */
+mediaRouter.get(
+  "/image",
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const parsed = imageProxySchema.safeParse(req.query);
+    if (!parsed.success) {
+      throw new AppError(400, "Invalid image URL", "VALIDATION_ERROR");
+    }
+    if (!s3Configured()) {
+      throw new AppError(503, "Media is not configured (S3)", "S3_NOT_CONFIGURED");
+    }
+    const key = ownBucketKey(absolutizeMediaUrl(parsed.data.url));
+    if (!key) throw new AppError(400, "Only Listifys photos can be loaded", "VALIDATION_ERROR");
+
+    const object = await s3Client()
+      .send(new GetObjectCommand({ Bucket: env.AWS_S3_BUCKET_NAME, Key: key }))
+      .catch(() => null);
+    const contentType = String(object?.ContentType || "");
+    if (!object?.Body || !contentType.startsWith("image/")) {
+      throw new AppError(404, "Image not found", "NOT_FOUND");
+    }
+    if (Number(object.ContentLength || 0) > 12 * 1024 * 1024) {
+      throw new AppError(413, "Image too large", "PAYLOAD_TOO_LARGE");
+    }
+    const bytes = await object.Body.transformToByteArray();
+    res.setHeader("Content-Type", contentType);
+    res.setHeader("Cache-Control", "private, max-age=300");
+    res.send(Buffer.from(bytes));
+  }),
+);
+
 /**
  * Server-side upload — avoids browser CORS failures on direct S3 PUT.
  * Body: raw image bytes. Query: folder, ext. Header: Content-Type.
@@ -114,18 +182,22 @@ mediaRouter.post(
   requireAuth,
   express.raw({
     type: "*/*",
-    limit: "12mb",
+    limit: "25mb",
   }),
   asyncHandler(async (req, res) => {
     const contentType = String(req.headers["content-type"] || "image/jpeg")
       .split(";")[0]
       .trim();
-    if (!contentType.startsWith("image/") && contentType !== "application/octet-stream") {
-      throw new AppError(400, "Content-Type must be an image", "VALIDATION_ERROR");
+    const isImage = contentType.startsWith("image/");
+    const isVideo = contentType === "video/mp4" || contentType === "video/quicktime";
+    const isPdf = contentType === "application/pdf";
+    if (!isImage && !isVideo && !isPdf && contentType !== "application/octet-stream") {
+      throw new AppError(400, "Content-Type must be an image, video, or PDF", "VALIDATION_ERROR");
     }
 
     const folderRaw = String(req.query.folder || "listings");
-    const folder = folderRaw === "profiles" ? "profiles" : "listings";
+    const folder =
+      folderRaw === "profiles" ? "profiles" : folderRaw === "chats" ? "chats" : "listings";
     const ext = normalizeExt(
       typeof req.query.ext === "string" ? req.query.ext : undefined,
       contentType,
@@ -134,8 +206,13 @@ mediaRouter.post(
     if (!body.length) {
       throw new AppError(400, "Empty upload body", "VALIDATION_ERROR");
     }
-    if (body.length > 12 * 1024 * 1024) {
-      throw new AppError(413, "File too large (max 12MB)", "PAYLOAD_TOO_LARGE");
+    const maxBytes = isVideo ? 20 * 1000 * 1000 : 12 * 1024 * 1024;
+    if (body.length > maxBytes) {
+      throw new AppError(
+        413,
+        isVideo ? "Video must be 20 MB or smaller" : "File too large (max 12MB)",
+        "PAYLOAD_TOO_LARGE",
+      );
     }
 
     const key = `${folder}/${req.userId}/${randomUUID()}.${ext}`;
@@ -156,9 +233,8 @@ mediaRouter.post(
         Bucket: env.AWS_S3_BUCKET_NAME,
         Key: key,
         Body: body,
-        ContentType: contentType.startsWith("image/")
-          ? contentType
-          : `image/${ext === "jpg" ? "jpeg" : ext}`,
+        ContentType:
+          isImage || isVideo || isPdf ? contentType : `image/${ext === "jpg" ? "jpeg" : ext}`,
       }),
     );
 

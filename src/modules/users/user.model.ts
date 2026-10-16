@@ -27,7 +27,14 @@ const userSchema = new Schema(
       type: [{ type: Schema.Types.ObjectId, ref: "User" }],
       default: [],
     },
+    /** Users this account has blocked. Listings and chat are hidden both ways. */
+    blockedUsers: {
+      type: [{ type: Schema.Types.ObjectId, ref: "User" }],
+      default: [],
+    },
     passwordHash: { type: String, select: false },
+    /** Previous password hashes. Reset cannot reuse the current password or these. */
+    passwordHistory: { type: [String], select: false, default: [] },
     providers: {
       type: [
         {
@@ -58,11 +65,14 @@ const userSchema = new Schema(
       default: [],
     },
     savedListingIds: { type: [String], default: [] },
+    /** ISO timestamps keyed by listing id. Older saves may be missing. */
+    savedListingAt: { type: Schema.Types.Mixed, default: () => ({}) },
     compareListingIds: { type: [String], default: [] },
     isActive: { type: Boolean, default: true },
     /** When set, account will be permanently deleted after this timestamp (7-day grace). */
     scheduledDeletionAt: { type: Date, default: null },
     deletionRequestedAt: { type: Date, default: null },
+    deletionReason: { type: String, default: "" },
     sellerPremium: {
       status: { type: String, default: "none" },
       isPremiumSeller: { type: Boolean, default: false },
