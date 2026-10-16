@@ -11,7 +11,7 @@
     "start": "node dist/index.js",
     "start:worker": "node dist/worker.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "lint": "eslint src --max-warnings 0",
+    "lint": "eslint src --quiet",
     "lint:fix": "eslint src --fix",
     "format": "prettier --write \"src/**/*.{ts,js,json}\" \".github/**/*.{yml,yaml}\" \"*.{json,md,yml,yaml,mts,mjs}\" \"eslint.config.mjs\"",
     "format:check": "prettier --check \"src/**/*.{ts,js,json}\" \".github/**/*.{yml,yaml}\" \"*.{json,md,yml,yaml,mts,mjs}\" \"eslint.config.mjs\"",

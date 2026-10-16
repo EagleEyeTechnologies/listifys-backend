@@ -30,12 +30,18 @@ on:
     branches: [develop]
   workflow_dispatch:
 
+concurrency:
+  group: backend-staging-${{ github.ref }}
+  cancel-in-progress: false
+
 env:
   NODE_VERSION: "20"
+  AWS_REGION: ${{ secrets.STAGE_AWS_REGION || 'us-east-1' }}
   ECR_REPOSITORY: listifys-backend
   CONTAINER_NAME: listifys-backend-stage
   HOST_PORT: "5001"
   CONTAINER_PORT: "5001"
+  EC2_ENV_DIR: ${{ secrets.STAGE_EC2_ENV_DIR || '/home/ubuntu/Listifys-stage' }}
 
 jobs:
   ci:
@@ -74,27 +80,36 @@ jobs:
       (github.event_name == 'push' && github.ref == 'refs/heads/develop')
     runs-on: ubuntu-latest
     outputs:
-      image: ${{ steps.out.outputs.image }}
-      tag: ${{ steps.out.outputs.tag }}
-      region: ${{ steps.out.outputs.region }}
+      image: ${{ steps.meta.outputs.image }}
+      tag: ${{ steps.meta.outputs.tag }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Resolve region & tag
-        id: prep
+      - name: Validate AWS secrets
         run: |
-          REGION="${{ secrets.STAGE_AWS_REGION }}"
-          if [ -z "$REGION" ]; then REGION="us-east-1"; fi
-          echo "region=${REGION}" >> "$GITHUB_OUTPUT"
-          echo "tag=${GITHUB_SHA::12}" >> "$GITHUB_OUTPUT"
+          missing=0
+          if [ -z "${{ secrets.STAGE_AWS_ACCESS_KEY_ID }}" ]; then
+            echo "ERROR: secret STAGE_AWS_ACCESS_KEY_ID is missing"
+            missing=1
+          fi
+          if [ -z "${{ secrets.STAGE_AWS_SECRET_ACCESS_KEY }}" ]; then
+            echo "ERROR: secret STAGE_AWS_SECRET_ACCESS_KEY is missing"
+            missing=1
+          fi
+          if [ -z "${{ env.AWS_REGION }}" ]; then
+            echo "ERROR: AWS_REGION is empty"
+            missing=1
+          fi
+          if [ "$missing" -ne 0 ]; then exit 1; fi
+          echo "Using AWS region: ${{ env.AWS_REGION }}"
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id: ${{ secrets.STAGE_AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.STAGE_AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ steps.prep.outputs.region }}
+          aws-region: ${{ env.AWS_REGION }}
 
       - name: Login to Amazon ECR
         id: ecr
@@ -108,14 +123,15 @@ jobs:
                  --image-scanning-configuration scanOnPush=true \
                  --encryption-configuration encryptionType=AES256
 
-      - name: Set outputs
-        id: out
+      - name: Image metadata
+        id: meta
         run: |
           IMAGE="${{ steps.ecr.outputs.registry }}/${ECR_REPOSITORY}"
+          TAG="${GITHUB_SHA::12}"
           echo "image=${IMAGE}" >> "$GITHUB_OUTPUT"
-          echo "tag=${{ steps.prep.outputs.tag }}" >> "$GITHUB_OUTPUT"
-          echo "region=${{ steps.prep.outputs.region }}" >> "$GITHUB_OUTPUT"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
           echo "IMAGE=${IMAGE}" >> "$GITHUB_ENV"
+          echo "TAG=${TAG}" >> "$GITHUB_ENV"
 
       - name: Build and push Docker image
         uses: docker/build-push-action@v6
@@ -124,7 +140,7 @@ jobs:
           file: ./Dockerfile
           push: true
           tags: |
-            ${{ env.IMAGE }}:${{ steps.prep.outputs.tag }}
+            ${{ env.IMAGE }}:${{ env.TAG }}
             ${{ env.IMAGE }}:staging
 
   deploy:
@@ -135,19 +151,48 @@ jobs:
       (github.event_name == 'push' && github.ref == 'refs/heads/develop')
     runs-on: ubuntu-latest
     steps:
-      - name: Resolve env dir
-        id: cfg
+      - name: Validate deploy secrets
         run: |
-          ENV_DIR="${{ secrets.STAGE_EC2_ENV_DIR }}"
-          if [ -z "$ENV_DIR" ]; then ENV_DIR="/home/ubuntu/Listifys-stage"; fi
-          echo "env_dir=${ENV_DIR}" >> "$GITHUB_OUTPUT"
+          missing=0
+          if [ -z "${{ secrets.STAGE_AWS_ACCESS_KEY_ID }}" ]; then
+            echo "ERROR: secret STAGE_AWS_ACCESS_KEY_ID is missing"
+            missing=1
+          fi
+          if [ -z "${{ secrets.STAGE_AWS_SECRET_ACCESS_KEY }}" ]; then
+            echo "ERROR: secret STAGE_AWS_SECRET_ACCESS_KEY is missing"
+            missing=1
+          fi
+          if [ -z "${{ secrets.STAGE_EC2_HOST }}" ]; then
+            echo "ERROR: secret STAGE_EC2_HOST is missing"
+            missing=1
+          fi
+          if [ -z "${{ secrets.STAGE_EC2_USERNAME }}" ]; then
+            echo "ERROR: secret STAGE_EC2_USERNAME is missing"
+            missing=1
+          fi
+          if [ -z "${{ secrets.STAGE_EC2_SSH_KEY }}" ]; then
+            echo "ERROR: secret STAGE_EC2_SSH_KEY is missing"
+            missing=1
+          fi
+          if [ -z "${{ secrets.ENV_FILE_STAGING }}" ]; then
+            echo "ERROR: secret ENV_FILE_STAGING is missing"
+            missing=1
+          fi
+          if [ -z "${{ needs.build-and-push.outputs.image }}" ] || [ -z "${{ needs.build-and-push.outputs.tag }}" ]; then
+            echo "ERROR: image/tag outputs from build-and-push are empty"
+            missing=1
+          fi
+          if [ "$missing" -ne 0 ]; then exit 1; fi
+          echo "Deploying ${{ needs.build-and-push.outputs.image }}:${{ needs.build-and-push.outputs.tag }}"
+          echo "AWS region: ${{ env.AWS_REGION }}"
+          echo "EC2 env dir: ${{ env.EC2_ENV_DIR }}"
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id: ${{ secrets.STAGE_AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.STAGE_AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ needs.build-and-push.outputs.region }}
+          aws-region: ${{ env.AWS_REGION }}
 
       - name: Setup SSH
         run: |
@@ -160,19 +205,14 @@ jobs:
         env:
           EC2_HOST: ${{ secrets.STAGE_EC2_HOST }}
           EC2_USER: ${{ secrets.STAGE_EC2_USERNAME }}
-          ENV_DIR: ${{ steps.cfg.outputs.env_dir }}
+          ENV_DIR: ${{ env.EC2_ENV_DIR }}
           ENV_FILE: ${{ secrets.ENV_FILE_STAGING }}
           IMAGE: ${{ needs.build-and-push.outputs.image }}
           TAG: ${{ needs.build-and-push.outputs.tag }}
-          REGION: ${{ needs.build-and-push.outputs.region }}
+          REGION: ${{ env.AWS_REGION }}
         run: |
           set -euo pipefail
           REGISTRY="${IMAGE%%/*}"
-
-          if [ -z "${ENV_FILE}" ]; then
-            echo "ERROR: secret ENV_FILE_STAGING is empty or missing"
-            exit 1
-          fi
 
           printf '%s\n' "$ENV_FILE" > /tmp/listifys.env
           ssh -i ~/.ssh/ec2_key -o StrictHostKeyChecking=yes \
