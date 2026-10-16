@@ -9,3 +9,4 @@ coverage/
 migration-reports/
 config/firebase-service-account.json
 **/firebase-service-account.json
+data/web-push-vapid.json

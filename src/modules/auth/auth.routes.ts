@@ -1,6 +1,6 @@
 import { Router, type Response } from "express";
 import { asyncHandler } from "../../utils/asyncHandler.js";
-import { authRateLimit } from "../../middleware/rateLimit.js";
+import { authIpRateLimit, authSubjectRateLimit } from "../../middleware/rateLimit.js";
 import {
   emailLoginSchema,
   emailRegisterSchema,
@@ -17,6 +17,7 @@ import {
   requestEmailOtp,
   requestPasswordResetOtp,
   requestPhoneOtp,
+  requestRegisterEmailOtp,
   resetPasswordWithOtp,
   socialLogin,
   socialSchema,
@@ -24,11 +25,12 @@ import {
   verifyPhoneOtp,
 } from "./auth.service.js";
 import { AppError } from "../../utils/AppError.js";
+import { recordLogin } from "./loginActivity.js";
 import { env } from "../../config/env.js";
 
 export const authRouter = Router();
 
-authRouter.use(authRateLimit);
+authRouter.use(authSubjectRateLimit, authIpRateLimit);
 
 function setAuthCookies(res: Response, accessToken: string, refreshToken: string) {
   const secure = env.NODE_ENV === "production";
@@ -55,7 +57,20 @@ authRouter.post(
     }
     const data = await registerWithEmail(parsed.data);
     setAuthCookies(res, data.accessToken, data.refreshToken);
+    recordLogin(req, data.user?.id, "register", data.refreshToken);
     res.status(201).json({ success: true, data });
+  }),
+);
+
+authRouter.post(
+  "/register/otp/request",
+  asyncHandler(async (req, res) => {
+    const parsed = emailRequestSchema.safeParse(req.body);
+    if (!parsed.success) {
+      throw new AppError(400, "Invalid email", "VALIDATION_ERROR", parsed.error.flatten());
+    }
+    const result = await requestRegisterEmailOtp(parsed.data.email);
+    res.json({ success: true, data: result });
   }),
 );
 
@@ -68,6 +83,7 @@ authRouter.post(
     }
     const data = await loginWithEmail(parsed.data);
     setAuthCookies(res, data.accessToken, data.refreshToken);
+    recordLogin(req, data.user?.id, "password", data.refreshToken);
     res.json({ success: true, data });
   }),
 );
@@ -93,6 +109,7 @@ authRouter.post(
     }
     const data = await resetPasswordWithOtp(parsed.data);
     setAuthCookies(res, data.accessToken, data.refreshToken);
+    recordLogin(req, data.user?.id, "password_reset", data.refreshToken);
     res.json({ success: true, data });
   }),
 );
@@ -118,6 +135,7 @@ authRouter.post(
     }
     const data = await verifyEmailOtp(parsed.data);
     setAuthCookies(res, data.accessToken, data.refreshToken);
+    recordLogin(req, data.user?.id, "email_otp", data.refreshToken);
     res.json({ success: true, data });
   }),
 );
@@ -129,7 +147,11 @@ authRouter.post(
     if (!parsed.success) {
       throw new AppError(400, "Invalid phone", "VALIDATION_ERROR", parsed.error.flatten());
     }
-    const result = await requestPhoneOtp(parsed.data.phone, parsed.data.phoneCode);
+    const result = await requestPhoneOtp(
+      parsed.data.phone,
+      parsed.data.phoneCode,
+      parsed.data.purpose || "login",
+    );
     res.json({ success: true, data: result });
   }),
 );
@@ -143,6 +165,7 @@ authRouter.post(
     }
     const data = await verifyPhoneOtp(parsed.data);
     setAuthCookies(res, data.accessToken, data.refreshToken);
+    recordLogin(req, data.user?.id, "phone_otp", data.refreshToken);
     res.json({ success: true, data });
   }),
 );
@@ -185,6 +208,7 @@ authRouter.post(
     }
     const data = await socialLogin("google", parsed.data);
     setAuthCookies(res, data.accessToken, data.refreshToken);
+    recordLogin(req, data.user?.id, "google", data.refreshToken);
     res.json({ success: true, data });
   }),
 );
@@ -198,6 +222,7 @@ authRouter.post(
     }
     const data = await socialLogin("apple", parsed.data);
     setAuthCookies(res, data.accessToken, data.refreshToken);
+    recordLogin(req, data.user?.id, "apple", data.refreshToken);
     res.json({ success: true, data });
   }),
 );

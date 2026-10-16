@@ -77,7 +77,13 @@ export async function createNotification(input: {
       void sendFcmToTokens(tokens, {
         title: input.title,
         body: input.body,
-        data: { type: input.type, href: input.href || "" },
+        data: { type: input.type, href: input.href || "", notificationId: doc._id.toString() },
+      }).then(async (result) => {
+        if (!result.invalidTokens.length) return;
+        await User.updateOne(
+          { _id: input.userId },
+          { $pull: { devices: { pushToken: { $in: result.invalidTokens } } } },
+        );
       });
     }
   } catch {
@@ -94,6 +100,20 @@ export async function listNotifications(userId: string) {
 
 export async function unreadCount(userId: string) {
   return Notification.countDocuments({ user: userId, read: false });
+}
+
+/** Mark message alerts for this thread read when the user opens the chat itself. */
+export async function markMessageNotificationsRead(userId: string, conversationId: string) {
+  if (!mongoose.isValidObjectId(conversationId)) return;
+  await Notification.updateMany(
+    {
+      user: userId,
+      read: false,
+      type: "message",
+      href: { $regex: conversationId },
+    },
+    { $set: { read: true } },
+  );
 }
 
 export async function markRead(userId: string, id: string) {
@@ -123,6 +143,11 @@ export async function deleteNotification(userId: string, id: string) {
     throw new AppError(404, "Notification not found", "NOT_FOUND");
   }
   return { id };
+}
+
+export async function clearAllNotifications(userId: string) {
+  const res = await Notification.deleteMany({ user: userId });
+  return { ok: true as const, deleted: res.deletedCount || 0 };
 }
 
 export const createNotificationSchema = z.object({

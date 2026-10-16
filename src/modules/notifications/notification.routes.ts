@@ -2,6 +2,7 @@ import { Router } from "express";
 import { asyncHandler } from "../../utils/asyncHandler.js";
 import { requireAuth } from "../../middleware/auth.js";
 import {
+  clearAllNotifications,
   deleteNotification,
   listNotifications,
   markAllRead,
@@ -10,6 +11,14 @@ import {
 } from "./notification.service.js";
 
 export const notificationsRouter = Router();
+
+notificationsRouter.get(
+  "/vapid-public-key",
+  asyncHandler(async (_req, res) => {
+    const { getVapidPublicKey } = await import("./webPush.service.js");
+    res.json({ success: true, data: { publicKey: getVapidPublicKey() } });
+  }),
+);
 
 notificationsRouter.use(requireAuth);
 
@@ -44,6 +53,14 @@ notificationsRouter.post(
   "/read-all",
   asyncHandler(async (req, res) => {
     const data = await markAllRead(req.userId!);
+    res.json({ success: true, data });
+  }),
+);
+
+notificationsRouter.delete(
+  "/",
+  asyncHandler(async (req, res) => {
+    const data = await clearAllNotifications(req.userId!);
     res.json({ success: true, data });
   }),
 );

@@ -4,7 +4,7 @@ import { isProd } from "../../config/origins.js";
 import { mongoReady } from "../../db/mongo.js";
 import { redisReady, redisBackend } from "../../redis/client.js";
 import { fcmReady } from "../notifications/fcm.service.js";
-import { elasticsearchReady } from "../search/search.service.js";
+import { searchReady } from "../search/search.service.js";
 import { s3Configured } from "../media/s3.js";
 
 export const healthRouter = Router();
@@ -41,7 +41,7 @@ healthRouter.get("/ready", (_req, res) => {
   const redis = redisReady();
   const s3 = s3Configured();
   const fcm = fcmReady();
-  const elasticsearch = elasticsearchReady();
+  const meilisearch = searchReady();
   const payments = paymentsStatus();
   const otp = otpProviders();
 
@@ -59,7 +59,7 @@ healthRouter.get("/ready", (_req, res) => {
       redisBackend: redisBackend(),
       s3,
       fcm,
-      elasticsearch,
+      meilisearch,
       payments,
       otp,
     },
@@ -79,7 +79,7 @@ healthRouter.get("/", (_req, res) => {
     redis,
     s3,
     fcm: fcmReady(),
-    elasticsearch: elasticsearchReady(),
+    meilisearch: searchReady(),
     service: "listifys-api",
     time: new Date().toISOString(),
   });

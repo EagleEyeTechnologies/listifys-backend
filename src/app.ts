@@ -7,7 +7,8 @@ import { getAllowedOrigins, isOriginAllowed, isProd } from "./config/origins.js"
 import { requestLogger } from "./middleware/requestLogger.js";
 import { errorHandler } from "./middleware/errorHandler.js";
 import { attachMarket } from "./middleware/market.js";
-import { globalRateLimit } from "./middleware/rateLimit.js";
+import { optionalAuth } from "./middleware/auth.js";
+import { globalIpRateLimit, globalRateLimit } from "./middleware/rateLimit.js";
 import { healthRouter } from "./modules/health/health.routes.js";
 import { authRouter } from "./modules/auth/auth.routes.js";
 import { listingsRouter } from "./modules/listings/listing.routes.js";
@@ -17,6 +18,8 @@ import { savedRouter } from "./modules/saved/saved.routes.js";
 import { compareRouter } from "./modules/compare/compare.routes.js";
 import { chatRouter } from "./modules/chat/chat.routes.js";
 import { notificationsRouter } from "./modules/notifications/notification.routes.js";
+import { jobAlertsRouter } from "./modules/job-alerts/jobAlert.routes.js";
+import { postDraftsRouter } from "./modules/post-drafts/postDraft.routes.js";
 import { placesRouter } from "./modules/places/places.routes.js";
 import { boostRouter } from "./modules/boost/boost.routes.js";
 import { paymentsRouter } from "./modules/payments/payments.routes.js";
@@ -67,7 +70,11 @@ export function createApp() {
   app.use(express.urlencoded({ extended: true }));
   app.use(cookieParser());
   app.use(requestLogger);
+  // Attach userId when a valid token is present so rate limits key per user
+  // (avoids shared office/NAT IPs exhausting one bucket during team testing).
+  app.use(optionalAuth);
   app.use(globalRateLimit);
+  app.use(globalIpRateLimit);
   app.use(attachMarket);
 
   app.use("/health", healthRouter);
@@ -78,6 +85,8 @@ export function createApp() {
   app.use("/api/compare", compareRouter);
   app.use("/api/chat", chatRouter);
   app.use("/api/notifications", notificationsRouter);
+  app.use("/api/job-alerts", jobAlertsRouter);
+  app.use("/api/post-drafts", postDraftsRouter);
   app.use("/api/media", mediaRouter);
   app.use("/api/images", legacyImagesRouter);
   app.use("/api/places", placesRouter);

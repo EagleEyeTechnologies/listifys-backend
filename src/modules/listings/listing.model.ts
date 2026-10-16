@@ -30,7 +30,7 @@ const listingSchema = new Schema(
       default: "sale",
       index: true,
     },
-    price: { type: Number, required: true, min: 0 },
+    price: { type: Number, required: true, min: 0, max: 999_999_999_999 },
     currency: { type: String, default: "INR" },
     countryCode: {
       type: String,
@@ -40,6 +40,7 @@ const listingSchema = new Schema(
     },
     condition: { type: String, trim: true, default: "" },
     images: { type: [String], default: [] },
+    video: { type: String, trim: true, default: "" },
     location: { type: String, required: true, trim: true },
     city: { type: String, required: true, trim: true, index: true },
     coordinates: { type: pointSchema },

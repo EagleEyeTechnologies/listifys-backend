@@ -1,25 +1,38 @@
 import { randomUUID } from "crypto";
 import { z } from "zod";
+import { personNameSchema, optionalPersonNameSchema } from "../../utils/personName.js";
 import * as argon2 from "argon2";
 import { User } from "../users/user.model.js";
-import { issueOtp, verifyOtp } from "./otp.js";
+import { assertStrongPassword } from "./passwordPolicy.js";
+import { assertOtpValid, consumeOtp, issueOtp, verifyOtp } from "./otp.js";
 import {
+  destroyRefreshToken,
+  destroySession,
   isRefreshTokenValid,
   issueTokenPair,
   revokeRefreshToken,
+  sessionFloor,
+  sessionOwner,
   storeRefreshToken,
+  storeSession,
   verifyRefreshToken,
 } from "./tokens.js";
+import { touchLoginSession } from "./loginActivity.js";
 import { AppError } from "../../utils/AppError.js";
 import { absolutizeMediaUrl } from "../../utils/mediaUrl.js";
 import {
+  assertValidNationalPhone,
   displayEmail,
   isApplePrivateRelayEmail,
   needsPublicEmail,
   normalizePhoneParts,
 } from "../../utils/phone.js";
 import type { CountryCode } from "../../types/domain.js";
-import { verifyAppleIdentityToken, verifyGoogleIdToken } from "./social.oauth.js";
+import {
+  verifyAppleIdentityToken,
+  verifyGoogleAccessToken,
+  verifyGoogleIdToken,
+} from "./social.oauth.js";
 
 export const emailRequestSchema = z.object({
   email: z.string().email(),
@@ -28,14 +41,15 @@ export const emailRequestSchema = z.object({
 export const emailVerifySchema = z.object({
   email: z.string().email(),
   code: z.string().min(4).max(8),
-  name: z.string().optional(),
+  name: optionalPersonNameSchema,
   countryCode: z.enum(["US", "CA", "IN"]).optional(),
 });
 
 export const emailRegisterSchema = z.object({
   email: z.string().email(),
   password: z.string().min(8).max(128),
-  name: z.string().min(1).max(100),
+  name: personNameSchema,
+  code: z.string().min(4).max(8),
   countryCode: z.enum(["US", "CA", "IN"]).optional(),
 });
 
@@ -53,28 +67,35 @@ export const emailResetPasswordSchema = z.object({
 export const phoneRequestSchema = z.object({
   phone: z.string().min(8).max(20),
   phoneCode: z.string().min(1).max(5).default("+91"),
+  purpose: z.enum(["login", "register"]).optional(),
 });
 
 export const phoneVerifySchema = z.object({
   phone: z.string().min(8).max(20),
   phoneCode: z.string().min(1).max(5).default("+91"),
   code: z.string().min(4).max(8),
-  name: z.string().optional(),
+  name: optionalPersonNameSchema,
   countryCode: z.enum(["US", "CA", "IN"]).optional(),
+  purpose: z.enum(["login", "register"]).optional(),
 });
 
 export const refreshSchema = z.object({
   refreshToken: z.string().min(10),
 });
 
-export const socialSchema = z.object({
-  idToken: z.string().min(10),
-  name: z.string().optional(),
-  email: z.string().email().optional(),
-  givenName: z.string().optional(),
-  familyName: z.string().optional(),
-  countryCode: z.enum(["US", "CA", "IN"]).optional(),
-});
+export const socialSchema = z
+  .object({
+    idToken: z.string().min(10).optional(),
+    accessToken: z.string().min(10).optional(),
+    name: z.string().max(80).optional(),
+    email: z.string().email().optional(),
+    givenName: z.string().optional(),
+    familyName: z.string().optional(),
+    countryCode: z.enum(["US", "CA", "IN"]).optional(),
+  })
+  .refine((value) => Boolean(value.idToken || value.accessToken), {
+    message: "A Google or Apple token is required",
+  });
 
 function publicUser(user: {
   _id: { toString(): string };
@@ -97,10 +118,13 @@ function publicUser(user: {
   };
 }
 
-async function tokensFor(userId: string) {
+async function tokensFor(userId: string, existingSessionId?: string) {
   const jti = randomUUID();
+  const sessionId = existingSessionId || randomUUID();
   await storeRefreshToken(userId, jti);
-  return issueTokenPair(userId, jti);
+  await storeSession(sessionId, userId);
+  if (existingSessionId) await touchLoginSession(userId, existingSessionId, jti);
+  return issueTokenPair(userId, jti, sessionId);
 }
 
 async function hashPassword(password: string) {
@@ -115,9 +139,12 @@ async function verifyPassword(hash: string, password: string) {
   }
 }
 
-/** Email register with password (no OTP). */
+/** Email register: requires a prior OTP from requestRegisterEmailOtp. */
 export async function registerWithEmail(input: z.infer<typeof emailRegisterSchema>) {
+  assertStrongPassword(input.password);
   const email = input.email.trim().toLowerCase();
+  await verifyOtp("email", email, input.code);
+
   const existing = await User.findOne({ email }).select("+passwordHash");
   if (existing?.passwordHash) {
     throw new AppError(409, "Email already registered. Please sign in.", "EMAIL_EXISTS");
@@ -146,6 +173,16 @@ export async function registerWithEmail(input: z.infer<typeof emailRegisterSchem
   });
   const tokens = await tokensFor(user._id.toString());
   return { user: publicUser(user), ...tokens };
+}
+
+/** Send OTP before creating an email+password account. */
+export async function requestRegisterEmailOtp(emailRaw: string) {
+  const email = emailRaw.trim().toLowerCase();
+  const existing = await User.findOne({ email }).select("+passwordHash");
+  if (existing?.passwordHash) {
+    throw new AppError(409, "Email already registered. Please sign in.", "EMAIL_EXISTS");
+  }
+  return issueOtp("email", email, "register");
 }
 
 /** Email login with password. */
@@ -178,22 +215,42 @@ export async function requestPasswordResetOtp(email: string) {
     // Do not leak whether the email exists
     return { expiresIn: 300 };
   }
-  return issueOtp("email", normalized);
+  return issueOtp("email", normalized, "password_reset");
 }
 
 /** Verify OTP and set a new password. */
 export async function resetPasswordWithOtp(input: z.infer<typeof emailResetPasswordSchema>) {
+  assertStrongPassword(input.password);
   const email = input.email.trim().toLowerCase();
-  await verifyOtp("email", email, input.code);
-  const user = await User.findOne({ email }).select("+passwordHash");
+  // Confirm the code without deleting it. A reused password or a second click
+  // must not turn a still-running countdown into "Invalid or expired OTP".
+  await assertOtpValid("email", email, input.code);
+  const user = await User.findOne({ email }).select("+passwordHash +passwordHistory");
   if (!user || !user.isActive) {
     throw new AppError(404, "User not found", "NOT_FOUND");
+  }
+  const history = (user.passwordHistory || []).filter((hash) => Boolean(hash));
+  const recent = [user.passwordHash, ...history]
+    .filter((hash): hash is string => Boolean(hash))
+    .slice(0, 3);
+  for (const hash of recent) {
+    if (await verifyPassword(hash, input.password)) {
+      throw new AppError(
+        400,
+        "Choose a password that is not one of your last 3 passwords.",
+        "PASSWORD_REUSED",
+      );
+    }
+  }
+  if (user.passwordHash) {
+    user.passwordHistory = [user.passwordHash, ...history].slice(0, 2);
   }
   user.passwordHash = await hashPassword(input.password);
   if (!user.providers?.some((p) => p.provider === "email")) {
     user.providers.push({ provider: "email", providerId: email });
   }
   await user.save();
+  await consumeOtp("email", email);
   const tokens = await tokensFor(user._id.toString());
   return { user: publicUser(user), ...tokens };
 }
@@ -201,7 +258,7 @@ export async function resetPasswordWithOtp(input: z.infer<typeof emailResetPassw
 /** @deprecated Prefer email+password. Kept for transitional clients. */
 export async function requestEmailOtp(email: string) {
   const normalized = email.trim().toLowerCase();
-  return issueOtp("email", normalized);
+  return issueOtp("email", normalized, "login");
 }
 
 /** @deprecated Prefer email+password. Kept for transitional clients. */
@@ -228,24 +285,92 @@ export async function verifyEmailOtp(input: z.infer<typeof emailVerifySchema>) {
   return { user: publicUser(user), ...tokens };
 }
 
-export async function requestPhoneOtp(phone: string, phoneCode: string) {
-  const target = `${phoneCode}:${phone}`;
-  return issueOtp("phone", target);
+async function findUserByPhone(phoneCode: string, phone: string, rawPhone?: string) {
+  const parts = normalizePhoneParts(phoneCode, phone);
+  const code = parts.phoneCode || phoneCode;
+  const national = parts.phone || phone;
+  return (
+    (await User.findOne({ phone: national, phoneCode: code })) ||
+    (rawPhone ? await User.findOne({ phone: rawPhone }) : null) ||
+    (await User.findOne({ phone: national })) ||
+    (await User.findOne({ phone: `${code}${national}` })) ||
+    (await User.findOne({ phone: `+${code.replace("+", "")}${national}` }))
+  );
+}
+
+function phoneNotRegistered() {
+  return new AppError(
+    404,
+    "This mobile number is not registered. Please create an account.",
+    "PHONE_NOT_REGISTERED",
+  );
+}
+
+export async function requestPhoneOtp(
+  phone: string,
+  phoneCode: string,
+  purpose: "login" | "register" = "login",
+) {
+  let normalized: { phoneCode: string; phone: string };
+  try {
+    normalized = assertValidNationalPhone(phoneCode, phone);
+  } catch (err) {
+    throw new AppError(
+      400,
+      err instanceof Error ? err.message : "Invalid phone number",
+      "VALIDATION_ERROR",
+    );
+  }
+
+  const existing = await findUserByPhone(normalized.phoneCode, normalized.phone, phone);
+
+  if (purpose === "register") {
+    if (existing) {
+      throw new AppError(
+        409,
+        "This mobile number is already registered. Please sign in.",
+        "PHONE_EXISTS",
+      );
+    }
+  } else if (!existing) {
+    throw phoneNotRegistered();
+  }
+
+  return issueOtp("phone", `${normalized.phoneCode}:${normalized.phone}`);
 }
 
 export async function verifyPhoneOtp(input: z.infer<typeof phoneVerifySchema>) {
-  const target = `${input.phoneCode}:${input.phone}`;
+  let normalized: { phoneCode: string; phone: string };
+  try {
+    normalized = assertValidNationalPhone(input.phoneCode, input.phone);
+  } catch (err) {
+    throw new AppError(
+      400,
+      err instanceof Error ? err.message : "Invalid phone number",
+      "VALIDATION_ERROR",
+    );
+  }
+  const target = `${normalized.phoneCode}:${normalized.phone}`;
   await verifyOtp("phone", target, input.code);
 
-  const parts = normalizePhoneParts(input.phoneCode, input.phone);
-  const phoneCode = parts.phoneCode || input.phoneCode;
-  const phone = parts.phone || input.phone;
+  const parts = normalizePhoneParts(normalized.phoneCode, normalized.phone);
+  const phoneCode = parts.phoneCode || normalized.phoneCode;
+  const phone = parts.phone || normalized.phone;
+  const purpose = input.purpose === "register" ? "register" : "login";
 
-  let user =
-    (await User.findOne({ phone, phoneCode })) ||
-    (await User.findOne({ phone: input.phone })) ||
-    (await User.findOne({ phone: `${phoneCode}${phone}` })) ||
-    (await User.findOne({ phone: `+${phoneCode.replace("+", "")}${phone}` }));
+  let user = await findUserByPhone(phoneCode, phone, input.phone);
+
+  if (purpose === "register" && user) {
+    throw new AppError(
+      409,
+      "This mobile number is already registered. Please sign in.",
+      "PHONE_EXISTS",
+    );
+  }
+
+  if (!user && purpose === "login") {
+    throw phoneNotRegistered();
+  }
 
   if (!user) {
     user = await User.create({
@@ -277,8 +402,18 @@ export async function refreshSession(refreshToken: string) {
   const payload = verifyRefreshToken(refreshToken);
   const ok = await isRefreshTokenValid(payload.sub, payload.jti);
   if (!ok) throw new AppError(401, "Refresh token revoked", "UNAUTHORIZED");
+  const floor = await sessionFloor(payload.sub);
+  if (floor && payload.iat && payload.iat * 1000 + 5000 < floor) {
+    throw new AppError(401, "Session ended. Sign in again.", "UNAUTHORIZED");
+  }
+  if (payload.sid) {
+    const owner = await sessionOwner(payload.sid);
+    if (owner !== payload.sub) {
+      throw new AppError(401, "Session ended. Sign in again.", "UNAUTHORIZED");
+    }
+  }
   await revokeRefreshToken(payload.sub, payload.jti);
-  const tokens = await tokensFor(payload.sub);
+  const tokens = await tokensFor(payload.sub, payload.sid);
   const user = await User.findById(payload.sub);
   if (!user || !user.isActive) {
     throw new AppError(401, "User not found", "UNAUTHORIZED");
@@ -286,11 +421,17 @@ export async function refreshSession(refreshToken: string) {
   return { user: publicUser(user), ...tokens };
 }
 
+/** New tokens for the device that just signed everyone else out. */
+export async function reissueSession(userId: string, sessionId?: string) {
+  return tokensFor(userId, sessionId || undefined);
+}
+
 export async function logout(refreshToken?: string) {
   if (!refreshToken) return;
   try {
     const payload = verifyRefreshToken(refreshToken);
-    await revokeRefreshToken(payload.sub, payload.jti);
+    await destroyRefreshToken(payload.sub, payload.jti);
+    if (payload.sid) await destroySession(payload.sid);
   } catch {
     // ignore invalid token on logout
   }
@@ -301,7 +442,9 @@ export async function socialLogin(
   input: z.infer<typeof socialSchema>,
 ) {
   if (provider === "google") {
-    const identity = await verifyGoogleIdToken(input.idToken);
+    const identity = input.idToken
+      ? await verifyGoogleIdToken(input.idToken)
+      : await verifyGoogleAccessToken(input.accessToken || "");
     const email = identity.email;
 
     let user = await User.findOne({
@@ -344,6 +487,9 @@ export async function socialLogin(
     return { user: publicUser(user), ...tokens };
   }
 
+  if (!input.idToken) {
+    throw new AppError(400, "Apple identity token is required", "VALIDATION_ERROR");
+  }
   const identity = await verifyAppleIdentityToken(input.idToken);
   const displayName =
     [input.givenName, input.familyName].filter(Boolean).join(" ").trim() ||

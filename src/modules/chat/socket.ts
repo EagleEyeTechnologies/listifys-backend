@@ -2,7 +2,7 @@ import type { Server as HttpServer } from "http";
 import { Server } from "socket.io";
 import { getAllowedOrigins } from "../../config/origins.js";
 import { logger } from "../../utils/logger.js";
-import { verifyAccessToken } from "../auth/tokens.js";
+import { assertAccessSession, verifyAccessToken } from "../auth/tokens.js";
 import { User } from "../users/user.model.js";
 import { Conversation } from "./conversation.model.js";
 import { sendMessage } from "./chat.service.js";
@@ -64,19 +64,22 @@ export function initSocket(httpServer: HttpServer) {
   });
 
   io.use((socket, next) => {
-    try {
-      const token =
-        (socket.handshake.auth?.token as string | undefined) ||
-        (socket.handshake.headers.authorization?.startsWith("Bearer ")
-          ? socket.handshake.headers.authorization.slice(7)
-          : undefined);
-      if (!token) return next(new Error("UNAUTHORIZED"));
-      const payload = verifyAccessToken(token);
-      socket.data.userId = payload.sub;
-      next();
-    } catch {
-      next(new Error("UNAUTHORIZED"));
-    }
+    void (async () => {
+      try {
+        const token =
+          (socket.handshake.auth?.token as string | undefined) ||
+          (socket.handshake.headers.authorization?.startsWith("Bearer ")
+            ? socket.handshake.headers.authorization.slice(7)
+            : undefined);
+        if (!token) return next(new Error("UNAUTHORIZED"));
+        const payload = verifyAccessToken(token);
+        await assertAccessSession(payload);
+        socket.data.userId = payload.sub;
+        next();
+      } catch {
+        next(new Error("UNAUTHORIZED"));
+      }
+    })();
   });
 
   io.on("connection", (socket) => {

@@ -1,3 +1,4 @@
+import mongoose from "mongoose";
 import { z } from "zod";
 import { User } from "./user.model.js";
 import { Listing } from "../listings/listing.model.js";
@@ -7,21 +8,39 @@ import { getSellerReviewStats } from "../reviews/reviews.service.js";
 import { isMongoObjectId, sellerSlugFrom } from "../../utils/slug.js";
 import { issueOtp, verifyOtp } from "../auth/otp.js";
 import { absolutizeMediaUrl } from "../../utils/mediaUrl.js";
-import { displayEmail, isApplePrivateRelayEmail } from "../../utils/phone.js";
+import {
+  assertValidDateOfBirth,
+  assertValidNationalPhone,
+  displayEmail,
+  isApplePrivateRelayEmail,
+} from "../../utils/phone.js";
+import { socialLinkError, type SocialField } from "../../utils/socialLinks.js";
+import { personNameSchema } from "../../utils/personName.js";
+
+function socialUrlField(field: SocialField, max: number) {
+  return z
+    .string()
+    .max(max)
+    .optional()
+    .superRefine((value, ctx) => {
+      const message = socialLinkError(field, value || "");
+      if (message) ctx.addIssue({ code: "custom", message });
+    });
+}
 
 export const updateMeSchema = z
   .object({
-    name: z.string().min(1).max(100).optional(),
+    name: personNameSchema.optional(),
     avatar: z.union([z.string().max(4000), z.literal("")]).optional(),
     banner: z.union([z.string().max(4000), z.literal("")]).optional(),
     bio: z.string().max(1000).optional(),
     location: z.string().max(200).optional(),
     gender: z.string().max(40).optional(),
     dateOfBirth: z.string().max(20).optional(),
-    website: z.string().max(300).optional(),
-    instagram: z.string().max(120).optional(),
-    linkedin: z.string().max(120).optional(),
-    twitter: z.string().max(120).optional(),
+    website: socialUrlField("website", 300),
+    instagram: socialUrlField("instagram", 300),
+    linkedin: socialUrlField("linkedin", 300),
+    twitter: socialUrlField("twitter", 300),
     countryCode: z.enum(["US", "CA", "IN"]).optional(),
   })
   .strict();
@@ -84,6 +103,9 @@ export function toMeUser(user: InstanceType<typeof User>) {
     followersCount: idsOf(user.followers).length,
     followingCount: idsOf(user.following).length,
     premium: publicPremiumStatus(user),
+    scheduledDeletionAt: user.scheduledDeletionAt
+      ? new Date(user.scheduledDeletionAt).toISOString()
+      : null,
     createdAt:
       (user as InstanceType<typeof User> & { createdAt?: Date }).createdAt?.toISOString?.() ?? null,
   };
@@ -91,9 +113,14 @@ export function toMeUser(user: InstanceType<typeof User>) {
 
 export async function toPublicUser(user: InstanceType<typeof User>, viewerId?: string) {
   const stats = await getSellerReviewStats(user._id.toString());
+  const isSelf = viewerId === user._id.toString();
   const listingCount = await Listing.countDocuments({
     seller: user._id,
-    status: { $in: ["active", "sold", "paused"] },
+    status: { $in: isSelf ? ["active", "sold", "paused"] : ["active", "sold"] },
+  });
+  const soldCount = await Listing.countDocuments({
+    seller: user._id,
+    status: "sold",
   });
   const followerIds = idsOf(user.followers);
   const followingIds = idsOf(user.following);
@@ -113,6 +140,7 @@ export async function toPublicUser(user: InstanceType<typeof User>, viewerId?: s
     averageRating: stats.averageRating,
     totalReviews: stats.totalReviews,
     listingCount,
+    soldCount,
     followersCount: followerIds.length,
     followingCount: followingIds.length,
     isFollowing: viewerId ? followerIds.includes(viewerId) : false,
@@ -172,6 +200,7 @@ export async function getPublicSellerProfile(idOrSlug: string, viewerId?: string
 
   const sample = listings[0];
   const activeCount = listings.filter((l) => l.status === "active").length;
+  const soldCount = await Listing.countDocuments({ seller: id, status: "sold" });
   const stubSlug = sellerSlugFrom(sample.sellerName || "seller", id);
   return {
     id,
@@ -186,6 +215,7 @@ export async function getPublicSellerProfile(idOrSlug: string, viewerId?: string
     averageRating: 0,
     totalReviews: 0,
     listingCount: activeCount || listings.length,
+    soldCount,
     followersCount: 0,
     followingCount: 0,
     isFollowing: false,
@@ -214,7 +244,19 @@ export async function updateMe(userId: string, input: z.infer<typeof updateMeSch
   ] as const;
   for (const key of fields) {
     if (input[key] !== undefined) {
-      (user as unknown as Record<string, unknown>)[key] = input[key];
+      let value: unknown = input[key];
+      if (key === "dateOfBirth") {
+        try {
+          value = assertValidDateOfBirth(String(value || ""));
+        } catch (err) {
+          throw new AppError(
+            400,
+            err instanceof Error ? err.message : "Invalid date of birth",
+            "VALIDATION_ERROR",
+          );
+        }
+      }
+      (user as unknown as Record<string, unknown>)[key] = value;
     }
   }
   await user.save();
@@ -234,7 +276,7 @@ export async function requestEmailChange(userId: string, emailRaw: string) {
   if (taken) {
     throw new AppError(409, "Email already in use", "EMAIL_EXISTS");
   }
-  return issueOtp("email", email);
+  return issueOtp("email", email, "email_change");
 }
 
 export async function verifyEmailChange(userId: string, emailRaw: string, code: string) {
@@ -257,11 +299,24 @@ export async function verifyEmailChange(userId: string, emailRaw: string, code: 
 }
 
 export async function requestPhoneChange(userId: string, phone: string, phoneCode: string) {
-  const taken = await User.findOne({ phone, _id: { $ne: userId } });
+  let normalized: { phoneCode: string; phone: string };
+  try {
+    normalized = assertValidNationalPhone(phoneCode, phone);
+  } catch (err) {
+    throw new AppError(
+      400,
+      err instanceof Error ? err.message : "Invalid phone number",
+      "VALIDATION_ERROR",
+    );
+  }
+  const taken = await User.findOne({
+    phone: normalized.phone,
+    _id: { $ne: userId },
+  });
   if (taken) {
     throw new AppError(409, "Phone already in use", "PHONE_EXISTS");
   }
-  return issueOtp("phone", `${phoneCode}:${phone}`);
+  return issueOtp("phone", `${normalized.phoneCode}:${normalized.phone}`);
 }
 
 export async function verifyPhoneChange(
@@ -270,21 +325,34 @@ export async function verifyPhoneChange(
   phoneCode: string,
   code: string,
 ) {
-  await verifyOtp("phone", `${phoneCode}:${phone}`, code);
+  let normalized: { phoneCode: string; phone: string };
+  try {
+    normalized = assertValidNationalPhone(phoneCode, phone);
+  } catch (err) {
+    throw new AppError(
+      400,
+      err instanceof Error ? err.message : "Invalid phone number",
+      "VALIDATION_ERROR",
+    );
+  }
+  await verifyOtp("phone", `${normalized.phoneCode}:${normalized.phone}`, code);
   const user = await User.findById(userId);
   if (!user || !user.isActive) {
     throw new AppError(401, "User not found", "UNAUTHORIZED");
   }
-  const taken = await User.findOne({ phone, _id: { $ne: userId } });
+  const taken = await User.findOne({
+    phone: normalized.phone,
+    _id: { $ne: userId },
+  });
   if (taken) {
     throw new AppError(409, "Phone already in use", "PHONE_EXISTS");
   }
-  user.phone = phone;
-  user.phoneCode = phoneCode;
+  user.phone = normalized.phone;
+  user.phoneCode = normalized.phoneCode;
   if (!user.providers?.some((p) => p.provider === "phone")) {
     user.providers.push({
       provider: "phone",
-      providerId: `${phoneCode}:${phone}`,
+      providerId: `${normalized.phoneCode}:${normalized.phone}`,
     });
   }
   await user.save();
@@ -324,6 +392,15 @@ export async function listConnections(
   const people = await User.find({ _id: { $in: ids }, isActive: true });
   const viewer = viewerId ? await User.findById(viewerId) : user;
   const viewerFollowing = idsOf(viewer?.following);
+  return Promise.all(people.map((p) => personFromUser(p, viewerFollowing)));
+}
+
+export async function listBlockedUsers(userId: string) {
+  const user = await requireUser(userId);
+  const ids = idsOf(user.blockedUsers);
+  if (!ids.length) return [];
+  const people = await User.find({ _id: { $in: ids }, isActive: true });
+  const viewerFollowing = idsOf(user.following);
   return Promise.all(people.map((p) => personFromUser(p, viewerFollowing)));
 }
 
@@ -372,4 +449,143 @@ export async function removeFollower(userId: string, followerId: string) {
   }
   await user.save();
   return { ok: true };
+}
+
+const DELETION_GRACE_MS = 7 * 24 * 60 * 60 * 1000;
+
+/** Schedule account deletion with a 7-day grace period (App Store requirement). */
+export async function requestAccountDeletion(userId: string, reason: string) {
+  const trimmed = reason.trim();
+  if (trimmed.length < 3) {
+    throw new AppError(400, "Please tell us why you are deleting your account", "VALIDATION_ERROR");
+  }
+  const user = await User.findById(userId);
+  if (!user || !user.isActive) {
+    throw new AppError(401, "User not found", "UNAUTHORIZED");
+  }
+  if (user.scheduledDeletionAt) {
+    return {
+      scheduledDeletionAt: new Date(user.scheduledDeletionAt).toISOString(),
+      daysRemaining: Math.max(
+        0,
+        Math.ceil(
+          (new Date(user.scheduledDeletionAt).getTime() - Date.now()) / (24 * 60 * 60 * 1000),
+        ),
+      ),
+      alreadyScheduled: true,
+    };
+  }
+  const when = new Date(Date.now() + DELETION_GRACE_MS);
+  user.scheduledDeletionAt = when;
+  user.deletionRequestedAt = new Date();
+  user.deletionReason = trimmed.slice(0, 500);
+  await user.save();
+  return {
+    scheduledDeletionAt: when.toISOString(),
+    daysRemaining: 7,
+    alreadyScheduled: false,
+  };
+}
+
+/** Cancel a pending account deletion during the grace period. */
+export async function cancelAccountDeletion(userId: string) {
+  const user = await User.findById(userId);
+  if (!user || !user.isActive) {
+    throw new AppError(401, "User not found", "UNAUTHORIZED");
+  }
+  if (!user.scheduledDeletionAt) {
+    throw new AppError(400, "No deletion is scheduled", "VALIDATION_ERROR");
+  }
+  user.set("scheduledDeletionAt", null);
+  user.set("deletionRequestedAt", null);
+  user.set("deletionReason", "");
+  await user.save();
+  return { ok: true };
+}
+
+/**
+ * Soft-delete / anonymize accounts whose grace period has elapsed.
+ * Safe to call from login or a periodic job.
+ */
+export async function purgeExpiredAccountDeletions(limit = 50) {
+  const due = await User.find({
+    scheduledDeletionAt: { $lte: new Date() },
+    isActive: true,
+  }).limit(limit);
+
+  let purged = 0;
+  for (const user of due) {
+    const id = user._id.toString();
+    await Listing.updateMany(
+      { seller: user._id, status: { $in: ["active", "paused"] } },
+      { $set: { status: "removed" } },
+    ).catch(() => undefined);
+
+    user.isActive = false;
+    user.email = `deleted_${id}@deleted.listifys.local`;
+    user.phone = "";
+    user.phoneCode = "";
+    user.name = "Deleted User";
+    user.avatar = "";
+    user.banner = "";
+    user.bio = "";
+    user.location = "";
+    user.website = "";
+    user.instagram = "";
+    user.linkedin = "";
+    user.twitter = "";
+    user.set("devices", []);
+    user.set("passwordHash", undefined);
+    user.set("providers", []);
+    user.set("scheduledDeletionAt", null);
+    user.set("deletionReason", "");
+    await user.save();
+    purged += 1;
+  }
+  return { purged };
+}
+
+export async function isEitherBlocked(userId: string, otherId: string) {
+  if (!userId || !otherId || userId === otherId) return false;
+  if (!isMongoObjectId(userId) || !isMongoObjectId(otherId)) return false;
+  const [a, b] = await Promise.all([
+    User.findById(userId).select("blockedUsers").lean(),
+    User.findById(otherId).select("blockedUsers").lean(),
+  ]);
+  const aBlocked = (a?.blockedUsers || []).some((id) => String(id) === otherId);
+  const bBlocked = (b?.blockedUsers || []).some((id) => String(id) === userId);
+  return aBlocked || bBlocked;
+}
+
+/** Sellers the viewer should not see: people they blocked, and people who blocked them. */
+export async function hiddenSellerIds(viewerId?: string) {
+  if (!viewerId || !isMongoObjectId(viewerId)) return [] as mongoose.Types.ObjectId[];
+  const me = await User.findById(viewerId).select("blockedUsers").lean();
+  const mine = (me?.blockedUsers || []).map((id) => String(id));
+  const others = await User.find({ blockedUsers: viewerId }).select("_id").lean();
+  const ids = new Set<string>([...mine, ...others.map((row) => String(row._id))]);
+  return [...ids].filter((id) => isMongoObjectId(id)).map((id) => new mongoose.Types.ObjectId(id));
+}
+
+export async function blockUser(userId: string, targetIdOrSlug: string) {
+  const target = await findUserByIdOrSlug(targetIdOrSlug);
+  if (!target || !target.isActive) throw new AppError(404, "User not found", "NOT_FOUND");
+  const targetId = target._id.toString();
+  if (targetId === userId) throw new AppError(400, "You can't block yourself", "VALIDATION_ERROR");
+  await User.updateOne(
+    { _id: userId },
+    {
+      $addToSet: { blockedUsers: target._id },
+      $pull: { following: target._id, followers: target._id },
+    },
+  );
+  await User.updateOne({ _id: target._id }, { $pull: { following: userId, followers: userId } });
+  return { blocked: true, userId: targetId };
+}
+
+export async function unblockUser(userId: string, targetIdOrSlug: string) {
+  const target = await findUserByIdOrSlug(targetIdOrSlug);
+  if (!target) throw new AppError(404, "User not found", "NOT_FOUND");
+  await User.updateOne({ _id: userId }, { $pull: { blockedUsers: target._id } });
+  return { blocked: false, userId: target._id.toString() };
 }

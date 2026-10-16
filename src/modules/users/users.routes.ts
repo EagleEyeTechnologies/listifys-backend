@@ -4,14 +4,23 @@ import { asyncHandler } from "../../utils/asyncHandler.js";
 import { optionalAuth, requireAuth } from "../../middleware/auth.js";
 import { AppError } from "../../utils/AppError.js";
 import { User } from "./user.model.js";
+import {
+  listLoginActivity,
+  revokeAllLoginSessions,
+  revokeLoginSession,
+  revokeOtherLoginSessions,
+} from "../auth/loginActivity.js";
 import { browseListings, listMyListings, listQuerySchema } from "../listings/listing.service.js";
 import {
   listConnections,
+  listBlockedUsers,
   removeFollower,
   toMeUser,
   findUserByIdOrSlug,
   getPublicSellerProfile,
   toggleFollow,
+  blockUser,
+  unblockUser,
   updateMe,
   updateMeSchema,
   changeEmailRequestSchema,
@@ -22,7 +31,11 @@ import {
   verifyEmailChange,
   requestPhoneChange,
   verifyPhoneChange,
+  requestAccountDeletion,
+  cancelAccountDeletion,
+  purgeExpiredAccountDeletions,
 } from "./users.service.js";
+import { reissueSession } from "../auth/auth.service.js";
 import { z } from "zod";
 import { sendFcmToTokens, fcmReady } from "../notifications/fcm.service.js";
 
@@ -32,11 +45,50 @@ usersRouter.get(
   "/me",
   requireAuth,
   asyncHandler(async (req, res) => {
+    void purgeExpiredAccountDeletions(5).catch(() => undefined);
     const user = await User.findById(req.userId);
     if (!user || !user.isActive) {
       throw new AppError(401, "User not found", "UNAUTHORIZED");
     }
     res.json({ success: true, data: toMeUser(user) });
+  }),
+);
+
+usersRouter.get(
+  "/me/activity",
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const limit = Number(req.query.limit) || 20;
+    const items = await listLoginActivity(req, req.userId!, limit);
+    res.json({ success: true, data: { items } });
+  }),
+);
+
+usersRouter.post(
+  "/me/sessions/revoke-all",
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const revoked = await revokeAllLoginSessions(req.userId!);
+    res.json({ success: true, data: { revoked } });
+  }),
+);
+
+usersRouter.post(
+  "/me/sessions/revoke-others",
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const revoked = await revokeOtherLoginSessions(req.userId!, req.sessionId);
+    const tokens = await reissueSession(req.userId!, req.sessionId);
+    res.json({ success: true, data: { revoked, ...tokens } });
+  }),
+);
+
+usersRouter.post(
+  "/me/sessions/:id/revoke",
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    await revokeLoginSession(req.userId!, String(req.params.id || ""));
+    res.json({ success: true });
   }),
 );
 
@@ -49,6 +101,32 @@ usersRouter.patch(
       throw new AppError(400, "Invalid payload", "VALIDATION_ERROR", parsed.error.flatten());
     }
     const data = await updateMe(req.userId!, parsed.data);
+    res.json({ success: true, data });
+  }),
+);
+
+usersRouter.post(
+  "/me/delete",
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const parsed = z.object({ reason: z.string().trim().min(3).max(500) }).safeParse(req.body);
+    if (!parsed.success) {
+      throw new AppError(
+        400,
+        "Please tell us why you are deleting your account",
+        "VALIDATION_ERROR",
+      );
+    }
+    const data = await requestAccountDeletion(req.userId!, parsed.data.reason);
+    res.json({ success: true, data });
+  }),
+);
+
+usersRouter.post(
+  "/me/delete/cancel",
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const data = await cancelAccountDeletion(req.userId!);
     res.json({ success: true, data });
   }),
 );
@@ -129,6 +207,15 @@ usersRouter.get(
 );
 
 usersRouter.get(
+  "/me/blocked",
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const data = await listBlockedUsers(req.userId!);
+    res.json({ success: true, data });
+  }),
+);
+
+usersRouter.get(
   "/me/following",
   requireAuth,
   asyncHandler(async (req, res) => {
@@ -142,6 +229,24 @@ usersRouter.delete(
   requireAuth,
   asyncHandler(async (req, res) => {
     const data = await removeFollower(req.userId!, String(req.params.userId));
+    res.json({ success: true, data });
+  }),
+);
+
+usersRouter.post(
+  "/:id/block",
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const data = await blockUser(req.userId!, String(req.params.id));
+    res.json({ success: true, data });
+  }),
+);
+
+usersRouter.delete(
+  "/:id/block",
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const data = await unblockUser(req.userId!, String(req.params.id));
     res.json({ success: true, data });
   }),
 );
@@ -181,7 +286,7 @@ usersRouter.post(
       .object({
         deviceId: z.string().min(8).max(512),
         platform: z.string().min(2).max(40).default("web"),
-        pushToken: z.string().min(8).max(512).optional(),
+        pushToken: z.string().max(4000).optional(),
       })
       .safeParse(req.body);
     if (!parsed.success) {
@@ -206,11 +311,14 @@ usersRouter.post(
       deviceId: parsed.data.deviceId,
       platform: parsed.data.platform,
       lastSeenAt: new Date(),
-      pushToken: parsed.data.pushToken
-        ? parsed.data.pushToken
-        : idx >= 0
-          ? devices[idx].pushToken
-          : undefined,
+      pushToken:
+        parsed.data.pushToken === ""
+          ? undefined
+          : parsed.data.pushToken
+            ? parsed.data.pushToken
+            : idx >= 0
+              ? devices[idx].pushToken
+              : undefined,
     };
     if (idx >= 0) devices[idx] = row;
     else devices.push(row);
@@ -245,6 +353,7 @@ usersRouter.post(
 
 usersRouter.get(
   "/:id/listings",
+  optionalAuth,
   asyncHandler(async (req, res) => {
     const resolved = await findUserByIdOrSlug(String(req.params.id));
     const id = resolved?._id?.toString() || String(req.params.id);
@@ -252,14 +361,17 @@ usersRouter.get(
       throw new AppError(404, "User not found", "NOT_FOUND");
     }
     // Allow listing browse even if the user document was not migrated.
+    const limit = typeof req.query.limit === "string" ? req.query.limit : 50;
+    const page = typeof req.query.page === "string" ? req.query.page : 1;
+    const sort = typeof req.query.sort === "string" ? req.query.sort : "latest";
     const query = listQuerySchema.parse({
       sellerId: id,
       status: "active",
-      limit: 50,
-      page: 1,
-      sort: "latest",
+      limit,
+      page,
+      sort,
     });
-    const data = await browseListings(req.countryCode, query);
+    const data = await browseListings(req.countryCode, query, req.userId);
     res.json({ success: true, data });
   }),
 );
