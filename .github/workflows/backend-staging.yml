@@ -80,29 +80,31 @@ jobs:
       (github.event_name == 'push' && github.ref == 'refs/heads/develop')
     runs-on: ubuntu-latest
     outputs:
-      image: ${{ steps.meta.outputs.image }}
       tag: ${{ steps.meta.outputs.tag }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
       - name: Validate AWS secrets
+        env:
+          AWS_ACCESS_KEY_ID_CHECK: ${{ secrets.STAGE_AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY_CHECK: ${{ secrets.STAGE_AWS_SECRET_ACCESS_KEY }}
         run: |
           missing=0
-          if [ -z "${{ secrets.STAGE_AWS_ACCESS_KEY_ID }}" ]; then
+          if [ -z "$AWS_ACCESS_KEY_ID_CHECK" ]; then
             echo "ERROR: secret STAGE_AWS_ACCESS_KEY_ID is missing"
             missing=1
           fi
-          if [ -z "${{ secrets.STAGE_AWS_SECRET_ACCESS_KEY }}" ]; then
+          if [ -z "$AWS_SECRET_ACCESS_KEY_CHECK" ]; then
             echo "ERROR: secret STAGE_AWS_SECRET_ACCESS_KEY is missing"
             missing=1
           fi
-          if [ -z "${{ env.AWS_REGION }}" ]; then
+          if [ -z "$AWS_REGION" ]; then
             echo "ERROR: AWS_REGION is empty"
             missing=1
           fi
           if [ "$missing" -ne 0 ]; then exit 1; fi
-          echo "Using AWS region: ${{ env.AWS_REGION }}"
+          echo "Using AWS region: $AWS_REGION"
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
@@ -125,13 +127,19 @@ jobs:
 
       - name: Image metadata
         id: meta
+        env:
+          ECR_REGISTRY: ${{ steps.ecr.outputs.registry }}
         run: |
-          IMAGE="${{ steps.ecr.outputs.registry }}/${ECR_REPOSITORY}"
+          if [ -z "$ECR_REGISTRY" ]; then
+            echo "ERROR: ECR registry output is empty"
+            exit 1
+          fi
+          IMAGE="${ECR_REGISTRY}/${ECR_REPOSITORY}"
           TAG="${GITHUB_SHA::12}"
-          echo "image=${IMAGE}" >> "$GITHUB_OUTPUT"
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
           echo "IMAGE=${IMAGE}" >> "$GITHUB_ENV"
           echo "TAG=${TAG}" >> "$GITHUB_ENV"
+          echo "Built image ref length: ${#IMAGE} tag: ${TAG}"
 
       - name: Build and push Docker image
         uses: docker/build-push-action@v6
@@ -152,40 +160,48 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Validate deploy secrets
+        env:
+          AWS_ACCESS_KEY_ID_CHECK: ${{ secrets.STAGE_AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY_CHECK: ${{ secrets.STAGE_AWS_SECRET_ACCESS_KEY }}
+          EC2_HOST: ${{ secrets.STAGE_EC2_HOST }}
+          EC2_USER: ${{ secrets.STAGE_EC2_USERNAME }}
+          EC2_SSH_KEY: ${{ secrets.STAGE_EC2_SSH_KEY }}
+          ENV_FILE: ${{ secrets.ENV_FILE_STAGING }}
+          TAG: ${{ needs.build-and-push.outputs.tag }}
         run: |
           missing=0
-          if [ -z "${{ secrets.STAGE_AWS_ACCESS_KEY_ID }}" ]; then
+          if [ -z "$AWS_ACCESS_KEY_ID_CHECK" ]; then
             echo "ERROR: secret STAGE_AWS_ACCESS_KEY_ID is missing"
             missing=1
           fi
-          if [ -z "${{ secrets.STAGE_AWS_SECRET_ACCESS_KEY }}" ]; then
+          if [ -z "$AWS_SECRET_ACCESS_KEY_CHECK" ]; then
             echo "ERROR: secret STAGE_AWS_SECRET_ACCESS_KEY is missing"
             missing=1
           fi
-          if [ -z "${{ secrets.STAGE_EC2_HOST }}" ]; then
+          if [ -z "$EC2_HOST" ]; then
             echo "ERROR: secret STAGE_EC2_HOST is missing"
             missing=1
           fi
-          if [ -z "${{ secrets.STAGE_EC2_USERNAME }}" ]; then
+          if [ -z "$EC2_USER" ]; then
             echo "ERROR: secret STAGE_EC2_USERNAME is missing"
             missing=1
           fi
-          if [ -z "${{ secrets.STAGE_EC2_SSH_KEY }}" ]; then
+          if [ -z "$EC2_SSH_KEY" ]; then
             echo "ERROR: secret STAGE_EC2_SSH_KEY is missing"
             missing=1
           fi
-          if [ -z "${{ secrets.ENV_FILE_STAGING }}" ]; then
+          if [ -z "$ENV_FILE" ]; then
             echo "ERROR: secret ENV_FILE_STAGING is missing"
             missing=1
           fi
-          if [ -z "${{ needs.build-and-push.outputs.image }}" ] || [ -z "${{ needs.build-and-push.outputs.tag }}" ]; then
-            echo "ERROR: image/tag outputs from build-and-push are empty"
+          if [ -z "$TAG" ]; then
+            echo "ERROR: tag output from build-and-push is empty"
             missing=1
           fi
           if [ "$missing" -ne 0 ]; then exit 1; fi
-          echo "Deploying ${{ needs.build-and-push.outputs.image }}:${{ needs.build-and-push.outputs.tag }}"
-          echo "AWS region: ${{ env.AWS_REGION }}"
-          echo "EC2 env dir: ${{ env.EC2_ENV_DIR }}"
+          echo "Deploy tag: $TAG"
+          echo "AWS region: $AWS_REGION"
+          echo "EC2 env dir: $EC2_ENV_DIR"
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
@@ -194,12 +210,33 @@ jobs:
           aws-secret-access-key: ${{ secrets.STAGE_AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
 
+      - name: Login to Amazon ECR
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Resolve image
+        env:
+          ECR_REGISTRY: ${{ steps.ecr.outputs.registry }}
+          TAG: ${{ needs.build-and-push.outputs.tag }}
+        run: |
+          if [ -z "$ECR_REGISTRY" ]; then
+            echo "ERROR: ECR registry output is empty"
+            exit 1
+          fi
+          IMAGE="${ECR_REGISTRY}/${ECR_REPOSITORY}"
+          echo "IMAGE=${IMAGE}" >> "$GITHUB_ENV"
+          echo "TAG=${TAG}" >> "$GITHUB_ENV"
+          echo "Resolved image length: ${#IMAGE} tag: ${TAG}"
+
       - name: Setup SSH
+        env:
+          EC2_HOST: ${{ secrets.STAGE_EC2_HOST }}
+          EC2_SSH_KEY: ${{ secrets.STAGE_EC2_SSH_KEY }}
         run: |
           mkdir -p ~/.ssh
-          printf '%s\n' "${{ secrets.STAGE_EC2_SSH_KEY }}" > ~/.ssh/ec2_key
+          printf '%s\n' "$EC2_SSH_KEY" > ~/.ssh/ec2_key
           chmod 600 ~/.ssh/ec2_key
-          ssh-keyscan -H "${{ secrets.STAGE_EC2_HOST }}" >> ~/.ssh/known_hosts
+          ssh-keyscan -H "$EC2_HOST" >> ~/.ssh/known_hosts
 
       - name: Deploy backend container
         env:
@@ -207,8 +244,6 @@ jobs:
           EC2_USER: ${{ secrets.STAGE_EC2_USERNAME }}
           ENV_DIR: ${{ env.EC2_ENV_DIR }}
           ENV_FILE: ${{ secrets.ENV_FILE_STAGING }}
-          IMAGE: ${{ needs.build-and-push.outputs.image }}
-          TAG: ${{ needs.build-and-push.outputs.tag }}
           REGION: ${{ env.AWS_REGION }}
         run: |
           set -euo pipefail
