@@ -23,7 +23,10 @@ jobAlertsRouter.post(
     if (!parsed.success) {
       throw new AppError(400, "Enter a keyword for this alert", "VALIDATION_ERROR");
     }
-    const data = await createJobAlert(req.userId!, parsed.data);
-    res.status(201).json({ success: true, data });
+    const result = await createJobAlert(req.userId!, parsed.data);
+    res.status(result.created ? 201 : 200).json({
+      success: true,
+      data: { ...result.alert, created: result.created },
+    });
   }),
 );
