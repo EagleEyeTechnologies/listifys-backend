@@ -581,6 +581,19 @@ export async function countListingsByCategory(
   for (const row of rows) {
     if (row._id) counts[String(row._id)] = row.count;
   }
+
+  // Match category pages: only upcoming events count (finished ones may still be Active until sweep).
+  if (counts.events) {
+    const eventRows = await Listing.find({ ...filter, category: "events" })
+      .select("extras countryCode")
+      .lean();
+    const upcoming = eventRows.filter(
+      (row) => !isEventPastFromExtras(row.extras, row.countryCode as string | undefined),
+    ).length;
+    if (upcoming > 0) counts.events = upcoming;
+    else delete counts.events;
+  }
+
   return counts;
 }
 
@@ -1026,6 +1039,72 @@ async function browseListingsUncached(
 
   let sort: Record<string, 1 | -1> = { createdAt: -1 };
   if (query.sort === "oldest") sort = { createdAt: 1 };
+
+  // Events: filter finished rows before paging so browse chips and category lists match.
+  if (query.category === "events") {
+    const allRows = await Listing.find(filter);
+    const upcoming = allRows.filter((row) => !isEventPastFromExtras(row.extras, row.countryCode));
+    const pastIds = allRows
+      .filter((row) => isEventPastFromExtras(row.extras, row.countryCode))
+      .map((row) => row._id);
+    if (pastIds.length) {
+      void Listing.updateMany(
+        { _id: { $in: pastIds }, status: "active" },
+        { $set: { status: "expired" } },
+      ).then(() => invalidateListingsCache());
+    }
+
+    const ordered = [...upcoming];
+    if (query.sort === "oldest") {
+      ordered.sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+    } else if (query.sort === "price-asc" || query.sort === "price-desc") {
+      const direction = query.sort === "price-asc" ? "asc" : "desc";
+      ordered.sort((a, b) => {
+        const ar = listingPriceRange(a as Parameters<typeof listingPriceRange>[0]);
+        const br = listingPriceRange(b as Parameters<typeof listingPriceRange>[0]);
+        if (!ar || !br) return ar ? -1 : br ? 1 : 0;
+        return direction === "asc"
+          ? ar.min - br.min || ar.max - br.max
+          : br.max - ar.max || br.min - ar.min;
+      });
+    } else {
+      ordered.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+    }
+
+    const pageRows = ordered.slice(skip, skip + limit);
+    const ratings = await sellerRatingStats(pageRows.map((row) => String(row.seller)));
+    let items = pageRows.map((row) => {
+      const stats = ratings.get(String(row.seller));
+      return {
+        ...toPublic(row),
+        sellerRating: stats?.rating,
+        sellerReviewCount: stats?.reviews ?? 0,
+        distanceMiles: undefined as number | undefined,
+      };
+    });
+    if (query.lat !== undefined && query.lng !== undefined) {
+      items = items.map((item) => {
+        if (item.lat === undefined || item.lng === undefined) return item;
+        return {
+          ...item,
+          distanceMiles: Number(
+            distanceMiles(query.lat!, query.lng!, item.lat, item.lng).toFixed(1),
+          ),
+        };
+      });
+      if (query.sort === "nearest") {
+        items = items.sort((a, b) => (a.distanceMiles ?? 1e9) - (b.distanceMiles ?? 1e9));
+      }
+    }
+    const upcomingTotal = upcoming.length;
+    return {
+      items,
+      page,
+      limit,
+      total: upcomingTotal,
+      totalPages: Math.max(1, Math.ceil(upcomingTotal / limit) || 0),
+    };
+  }
 
   const byPrice = query.sort === "price-asc" || query.sort === "price-desc";
   const [rows, total] = byPrice
