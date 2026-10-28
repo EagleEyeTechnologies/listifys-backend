@@ -2,7 +2,7 @@ import argon2 from "argon2";
 import mongoose from "mongoose";
 import type { Request } from "express";
 import { z } from "zod";
-import { getAdminEmails } from "../../config/env.js";
+import { getOwnerEmails, isOwnerEmail } from "../../config/env.js";
 import { AppError } from "../../utils/AppError.js";
 import { User } from "../users/user.model.js";
 import { Listing } from "../listings/listing.model.js";
@@ -64,11 +64,14 @@ function maskIp(ip?: string) {
 }
 
 export async function syncAdminAccountsFromEnv() {
-  const emails = getAdminEmails();
+  const emails = getOwnerEmails();
   for (const email of emails) {
     await AdminAccount.updateOne(
       { email },
-      { $setOnInsert: { email, role: "super", isActive: true } },
+      {
+        $set: { email, role: "owner", isActive: true },
+        $setOnInsert: { addedByEmail: "system" },
+      },
       { upsert: true },
     );
   }
@@ -657,15 +660,24 @@ export async function listAdminAccounts(query: z.infer<typeof pageQuerySchema>) 
   const users = await User.find({ email: { $in: emails } }).lean();
   const userMap = new Map(users.map((u) => [u.email?.toLowerCase(), u]));
   const roleLabel = (r: string) =>
-    r === "super" ? "Super Admin" : r === "support" ? "Support" : "Moderator";
+    r === "owner"
+      ? "Owner"
+      : r === "super"
+        ? "Super Admin"
+        : r === "support"
+          ? "Support"
+          : "Moderator";
   return {
     items: accounts.map((a) => {
       const user = userMap.get(a.email);
+      const isOwner = a.role === "owner" || isOwnerEmail(a.email);
       return {
         id: a._id.toString(),
         name: user?.name || a.email.split("@")[0] || "Admin",
         email: a.email,
-        role: roleLabel(a.role),
+        role: roleLabel(isOwner ? "owner" : a.role),
+        roleKey: isOwner ? "owner" : a.role,
+        isOwner,
         status: a.isActive ? "Active" : "Inactive",
         lastLogin: relativeTime(a.lastLoginAt as Date | undefined),
         avatar: initials(user?.name || "", a.email),
@@ -688,7 +700,21 @@ export async function upsertAdminAccount(
   req: Request,
   body: z.infer<typeof upsertAdminAccountSchema>,
 ) {
+  if (!req.isOwner) {
+    throw new AppError(403, "Only owners can manage admin roles", "FORBIDDEN");
+  }
   const email = body.email.trim().toLowerCase();
+  if (isOwnerEmail(email)) {
+    throw new AppError(
+      400,
+      "Owner accounts are managed via OWNER_EMAILS and cannot be edited here",
+      "VALIDATION_ERROR",
+    );
+  }
+  const existing = await AdminAccount.findOne({ email }).lean();
+  if (existing?.role === "owner") {
+    throw new AppError(400, "Cannot modify an owner account", "VALIDATION_ERROR");
+  }
   const doc = await AdminAccount.findOneAndUpdate(
     { email },
     {
@@ -704,7 +730,7 @@ export async function upsertAdminAccount(
     target: email,
     section: "Admins",
   });
-  return { id: doc._id.toString(), email: doc.email };
+  return { id: doc._id.toString(), email: doc.email, role: doc.role };
 }
 
 export async function getAdminSettings(req: Request) {

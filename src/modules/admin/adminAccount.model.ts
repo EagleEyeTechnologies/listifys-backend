@@ -12,7 +12,7 @@ const adminAccountSchema = new Schema(
     },
     role: {
       type: String,
-      enum: ["super", "moderator", "support"],
+      enum: ["owner", "super", "moderator", "support"],
       default: "moderator",
     },
     isActive: { type: Boolean, default: true, index: true },

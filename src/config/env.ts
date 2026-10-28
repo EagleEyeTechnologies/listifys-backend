@@ -26,9 +26,11 @@ const envSchema = z.object({
   /** Extra comma-separated browser origins allowed for CORS (production). */
   CORS_ORIGINS: z.string().optional(),
   /**
-   * Comma-separated emails allowed to access `/api/admin/*`.
-   * Must match marketplace User.email (same login credentials as website).
+   * Comma-separated owner emails (full control of admin panel + role management).
+   * Must match marketplace User.email. Admins are also allowed via AdminAccount.
    */
+  OWNER_EMAILS: z.string().optional(),
+  /** @deprecated Use OWNER_EMAILS. Kept temporarily so older .env files still parse. */
   ADMIN_EMAILS: z.string().optional(),
   DEFAULT_COUNTRY_CODE: z.enum(["US", "CA", "IN"]).default("IN"),
   MEILISEARCH_HOST: z.string().optional(),
@@ -140,15 +142,26 @@ function parseEnv(): Env {
 
 export const env = parseEnv();
 
-/** Normalized admin allowlist from ADMIN_EMAILS. */
-export function getAdminEmails(): string[] {
-  return (env.ADMIN_EMAILS || "")
+/** Normalized owner allowlist from OWNER_EMAILS (falls back to legacy ADMIN_EMAILS). */
+export function getOwnerEmails(): string[] {
+  const raw = env.OWNER_EMAILS || env.ADMIN_EMAILS || "";
+  return raw
     .split(",")
     .map((s) => s.trim().toLowerCase())
     .filter(Boolean);
 }
 
-export function isAdminEmail(email: string | null | undefined): boolean {
+export function isOwnerEmail(email: string | null | undefined): boolean {
   if (!email) return false;
-  return getAdminEmails().includes(email.trim().toLowerCase());
+  return getOwnerEmails().includes(email.trim().toLowerCase());
+}
+
+/** @deprecated Use getOwnerEmails / isOwnerEmail */
+export function getAdminEmails(): string[] {
+  return getOwnerEmails();
+}
+
+/** @deprecated Use isOwnerEmail */
+export function isAdminEmail(email: string | null | undefined): boolean {
+  return isOwnerEmail(email);
 }
