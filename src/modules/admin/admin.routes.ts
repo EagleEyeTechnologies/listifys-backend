@@ -1,17 +1,18 @@
 import { Router } from "express";
-import { requireAdmin } from "../../middleware/requireAdmin.js";
+import { requireAdmin, requireOwner } from "../../middleware/requireAdmin.js";
 import { asyncHandler } from "../../utils/asyncHandler.js";
 import { AppError } from "../../utils/AppError.js";
 import {
   adminListingsQuerySchema,
   adminUsersQuerySchema,
   getAdminCategoryCounts,
-  getAdminConversationMessages,
   getAdminListing,
   getAdminMe,
+  getAdminPayment,
   getAdminStats,
+  getAdminUser,
+  refundAdminPayment,
   listAdminBoosts,
-  listAdminConversations,
   listAdminEventBookings,
   listAdminListings,
   listAdminPayments,
@@ -64,7 +65,10 @@ adminRouter.use(...requireAdmin);
 adminRouter.get(
   "/me",
   asyncHandler(async (req, res) => {
-    const data = await getAdminMe(req.userId!);
+    const data = await getAdminMe(req.userId!, {
+      role: req.adminRole,
+      isOwner: req.isOwner,
+    });
     res.json({ success: true, data });
   }),
 );
@@ -85,6 +89,14 @@ adminRouter.get(
       throw new AppError(400, "Invalid query", "VALIDATION_ERROR", parsed.error.flatten());
     }
     const data = await listAdminUsers(parsed.data);
+    res.json({ success: true, data });
+  }),
+);
+
+adminRouter.get(
+  "/users/:id",
+  asyncHandler(async (req, res) => {
+    const data = await getAdminUser(String(req.params.id));
     res.json({ success: true, data });
   }),
 );
@@ -175,6 +187,28 @@ adminRouter.get(
 );
 
 adminRouter.get(
+  "/payments/:id",
+  asyncHandler(async (req, res) => {
+    const data = await getAdminPayment(String(req.params.id));
+    res.json({ success: true, data });
+  }),
+);
+
+adminRouter.post(
+  "/payments/:id/refund",
+  asyncHandler(async (req, res) => {
+    const id = String(req.params.id);
+    const data = await refundAdminPayment(id);
+    void logAdminActivity(req, {
+      action: "Refunded payment",
+      target: id,
+      section: "Payments",
+    });
+    res.json({ success: true, data });
+  }),
+);
+
+adminRouter.get(
   "/boosts",
   asyncHandler(async (req, res) => {
     const parsed = pageQuerySchema.safeParse(req.query);
@@ -234,26 +268,6 @@ adminRouter.patch(
       throw new AppError(400, "Invalid payload", "VALIDATION_ERROR", parsed.error.flatten());
     }
     const data = await patchAdminReview(String(req.params.id), parsed.data);
-    res.json({ success: true, data });
-  }),
-);
-
-adminRouter.get(
-  "/conversations",
-  asyncHandler(async (req, res) => {
-    const parsed = pageQuerySchema.safeParse(req.query);
-    if (!parsed.success) {
-      throw new AppError(400, "Invalid query", "VALIDATION_ERROR", parsed.error.flatten());
-    }
-    const data = await listAdminConversations(parsed.data);
-    res.json({ success: true, data });
-  }),
-);
-
-adminRouter.get(
-  "/conversations/:id/messages",
-  asyncHandler(async (req, res) => {
-    const data = await getAdminConversationMessages(String(req.params.id));
     res.json({ success: true, data });
   }),
 );
@@ -414,6 +428,7 @@ adminRouter.patch(
 
 adminRouter.get(
   "/admins",
+  requireOwner,
   asyncHandler(async (req, res) => {
     const parsed = platformPageQuerySchema.safeParse(req.query);
     if (!parsed.success) {
@@ -426,6 +441,7 @@ adminRouter.get(
 
 adminRouter.post(
   "/admins",
+  requireOwner,
   asyncHandler(async (req, res) => {
     const parsed = upsertAdminAccountSchema.safeParse(req.body);
     if (!parsed.success) {
