@@ -87,10 +87,7 @@ function lastSeenFromDevices(devices?: Array<{ lastSeenAt?: Date | null }> | nul
   return latest;
 }
 
-export async function getAdminMe(
-  userId: string,
-  extras?: { role?: string; isOwner?: boolean },
-) {
+export async function getAdminMe(userId: string, extras?: { role?: string; isOwner?: boolean }) {
   const user = await User.findById(userId).select("email name avatar countryCode isActive");
   if (!user) throw new AppError(404, "User not found", "NOT_FOUND");
   return {
@@ -341,11 +338,7 @@ export async function listAdminListings(query: z.infer<typeof adminListingsQuery
   ]);
 
   const sellerIds = [
-    ...new Set(
-      listings
-        .map((l) => (l.seller ? l.seller.toString() : ""))
-        .filter(Boolean),
-    ),
+    ...new Set(listings.map((l) => (l.seller ? l.seller.toString() : "")).filter(Boolean)),
   ];
   const sellers = sellerIds.length
     ? await User.find({ _id: { $in: sellerIds } })
@@ -1270,4 +1263,3 @@ export async function patchAdminReview(id: string, body: z.infer<typeof patchAdm
 
   return { id: review._id.toString(), status: review.status };
 }
-
