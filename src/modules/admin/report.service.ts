@@ -417,3 +417,106 @@ export async function createAdminFlagReport(input: {
     source: "admin_flag",
   });
 }
+
+async function deliverModerationNotice(userId: string, title: string, body: string) {
+  if (!mongoose.isValidObjectId(userId)) return;
+  try {
+    await createNotification({
+      userId,
+      type: "system",
+      title,
+      body,
+      href: "/notifications",
+    });
+    getIo()?.to(`user:${userId}`).emit("notification:new", { title, body });
+  } catch (err) {
+    logger.warn("Failed to notify user of moderation decision", {
+      err: err instanceof Error ? err.message : String(err),
+    });
+  }
+  try {
+    const recipient = await User.findById(userId).select("email");
+    if (recipient?.email) {
+      await sendReportEmail([recipient.email], `[Listifys] ${title}`, body);
+    }
+  } catch (err) {
+    logger.warn("Failed to email moderation decision", {
+      err: err instanceof Error ? err.message : String(err),
+    });
+  }
+}
+
+/** Tell the reporter and the reported account what the moderator decided. */
+export async function notifyModerationDecision(input: {
+  type: string;
+  subject: string;
+  reason: string;
+  status: string;
+  action: string;
+  reporterId?: string;
+  userId?: string;
+  reviewId?: string;
+}) {
+  const subject = input.subject || "this report";
+  const reason = input.reason ? ` (${input.reason})` : "";
+  const dismissed = input.status === "dismissed";
+  const reporterTitle = dismissed ? "Report dismissed" : "Report resolved";
+  let reporterBody = dismissed
+    ? `We reviewed your report about “${subject}”${reason} and did not take action.`
+    : `We reviewed your report about “${subject}”${reason} and resolved it.`;
+  if (!dismissed && input.action === "pause_listing") {
+    reporterBody = `We reviewed your report about “${subject}” and paused the listing.`;
+  } else if (!dismissed && input.action === "remove_listing") {
+    reporterBody = `We reviewed your report about “${subject}” and removed the listing.`;
+  } else if (!dismissed && input.action === "hide_review") {
+    reporterBody = `We reviewed your report about “${subject}” and hid the review.`;
+  } else if (!dismissed && input.action === "deactivate_user") {
+    reporterBody = `We reviewed your report about “${subject}” and deactivated the account.`;
+  }
+
+  const notices: Array<{ userId: string; title: string; body: string }> = [];
+  const seen = new Set<string>();
+  const add = (userId: string | undefined, title: string, body: string) => {
+    if (!userId || seen.has(userId)) return;
+    seen.add(userId);
+    notices.push({ userId, title, body });
+  };
+
+  add(input.reporterId, reporterTitle, reporterBody);
+
+  if (
+    input.action === "hide_review" &&
+    input.reviewId &&
+    mongoose.isValidObjectId(input.reviewId)
+  ) {
+    const review = await SellerReview.findById(input.reviewId).select("reviewer");
+    const authorId = review?.reviewer ? String(review.reviewer) : "";
+    add(authorId, "Review hidden", "Your review was hidden after a moderation review.");
+    add(
+      input.userId,
+      "Review hidden",
+      "A review on your profile was hidden after a moderation review.",
+    );
+  } else if (input.userId) {
+    let title = dismissed ? "Report dismissed" : "Report resolved";
+    let body = dismissed
+      ? `A report about “${subject}” was reviewed and dismissed. No action was taken on your account.`
+      : `A report about “${subject}” was reviewed. No action was taken.`;
+    if (!dismissed && input.action === "pause_listing") {
+      title = "Listing paused";
+      body = `Your listing “${subject}” was paused after a moderation review.`;
+    } else if (!dismissed && input.action === "remove_listing") {
+      title = "Listing removed";
+      body = `Your listing “${subject}” was removed after a moderation review.`;
+    } else if (!dismissed && input.action === "deactivate_user") {
+      title = "Account deactivated";
+      body =
+        "Your account was deactivated after a moderation review. You will not be able to sign in until it is reactivated.";
+    }
+    add(input.userId, title, body);
+  }
+
+  await Promise.all(
+    notices.map((notice) => deliverModerationNotice(notice.userId, notice.title, notice.body)),
+  );
+}

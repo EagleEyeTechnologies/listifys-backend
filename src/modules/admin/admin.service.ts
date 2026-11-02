@@ -323,7 +323,9 @@ export async function listAdminListings(query: z.infer<typeof adminListingsQuery
   const filter: Record<string, unknown> = {};
   if (query.category !== "all") filter.category = query.category;
   if (query.intent !== "all") filter.intent = query.intent;
-  if (query.status !== "all") filter.status = query.status;
+  // "all" matches the Total Listings card: every listing that has not been removed.
+  if (query.status === "all") filter.status = { $ne: "removed" };
+  else filter.status = query.status;
   if (query.market !== "all") filter.countryCode = query.market;
   if (query.q?.trim()) {
     const q = query.q.trim();
@@ -331,10 +333,18 @@ export async function listAdminListings(query: z.infer<typeof adminListingsQuery
     filter.$or = [{ title: rx }, { sellerName: rx }, { location: rx }, { city: rx }, { slug: rx }];
   }
 
+  const countFilter = { ...filter };
+  delete countFilter.category;
+
   const skip = (query.page - 1) * query.limit;
-  const [total, listings] = await Promise.all([
+  const [total, listings, categoryRows, allCount] = await Promise.all([
     Listing.countDocuments(filter),
     Listing.find(filter).sort({ createdAt: -1 }).skip(skip).limit(query.limit).lean(),
+    Listing.aggregate<{ _id: string; count: number }>([
+      { $match: countFilter },
+      { $group: { _id: "$category", count: { $sum: 1 } } },
+    ]),
+    Listing.countDocuments(countFilter),
   ]);
 
   const sellerIds = [
@@ -389,6 +399,11 @@ export async function listAdminListings(query: z.infer<typeof adminListingsQuery
     limit: query.limit,
     total,
     totalPages: Math.max(1, Math.ceil(total / query.limit)),
+    allCount,
+    categoryCounts: categoryRows.map((row) => ({
+      slug: String(row._id || ""),
+      count: row.count,
+    })),
   };
 }
 
@@ -1084,8 +1099,30 @@ export async function listAdminEventBookings(query: z.infer<typeof pageQuerySche
     filter.status = map[query.status] || query.status.toLowerCase();
   }
   if (query.q?.trim()) {
-    const rx = new RegExp(query.q.trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
-    filter.$or = [{ eventTitle: rx }, { attendeeName: rx }, { attendeePhone: rx }];
+    const raw = query.q.trim();
+    const rx = new RegExp(raw.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
+    const or: Record<string, unknown>[] = [
+      { eventTitle: rx },
+      { attendeeName: rx },
+      { attendeePhone: rx },
+      { ticketCode: rx },
+      { ticketTierName: rx },
+    ];
+    if (mongoose.isValidObjectId(raw)) {
+      const oid = new mongoose.Types.ObjectId(raw);
+      or.push({ _id: oid }, { listingId: oid }, { paymentId: oid }, { userId: oid });
+    } else if (/^[a-f0-9]{6,}$/i.test(raw)) {
+      or.push({
+        $expr: {
+          $regexMatch: {
+            input: { $toString: "$_id" },
+            regex: raw,
+            options: "i",
+          },
+        },
+      });
+    }
+    filter.$or = or;
   }
   const skip = (query.page - 1) * query.limit;
   const since30 = new Date(Date.now() - 30 * 86400000);
