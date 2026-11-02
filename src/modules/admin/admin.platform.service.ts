@@ -3,7 +3,10 @@ import mongoose from "mongoose";
 import type { Request } from "express";
 import { z } from "zod";
 import { getOwnerEmails, isOwnerEmail } from "../../config/env.js";
+import { adminPasswordUpdateMessage } from "../auth/passwordPolicy.js";
 import { AppError } from "../../utils/AppError.js";
+import { logger } from "../../utils/logger.js";
+import { notificationScheduleIssue } from "./notificationSchedule.js";
 import { User } from "../users/user.model.js";
 import { Listing } from "../listings/listing.model.js";
 import { Payment } from "../payments/payment.model.js";
@@ -15,7 +18,7 @@ import { AppUpdateConfig } from "./appUpdateConfig.model.js";
 import { ModerationReport } from "./moderationReport.model.js";
 import { NotificationCampaign } from "./notificationCampaign.model.js";
 import { PlatformSettings } from "./platformSettings.model.js";
-import { syncFlaggedReviewsToModeration } from "./report.service.js";
+import { syncFlaggedReviewsToModeration, notifyModerationDecision } from "./report.service.js";
 import { logAdminActivity } from "./adminActivity.util.js";
 
 export const pageQuerySchema = z.object({
@@ -24,6 +27,12 @@ export const pageQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(100).default(20),
   status: z.string().optional().default("all"),
 });
+
+const SENSITIVE_ACTION_PATTERN = /deactivat|removed|refund|force|delete/i;
+
+function sensitiveWindowStart() {
+  return new Date(Date.now() - 30 * 86400000);
+}
 
 function formatDate(d?: Date | null) {
   if (!d) return "—";
@@ -265,6 +274,7 @@ export async function patchModerationReport(
   if (!mongoose.isValidObjectId(id)) throw new AppError(400, "Invalid id", "VALIDATION_ERROR");
   const report = await ModerationReport.findById(id);
   if (!report) throw new AppError(404, "Report not found", "NOT_FOUND");
+  const previousStatus = report.status;
   if (body.status) {
     report.status = body.status;
     if (body.status === "resolved" || body.status === "dismissed") {
@@ -300,6 +310,21 @@ export async function patchModerationReport(
   }
 
   await report.save();
+  const closed =
+    (report.status === "resolved" || report.status === "dismissed") &&
+    previousStatus !== report.status;
+  if (closed) {
+    await notifyModerationDecision({
+      type: report.type,
+      subject: report.subject,
+      reason: report.reason,
+      status: report.status,
+      action,
+      reporterId: report.reporterId ? String(report.reporterId) : "",
+      userId: report.userId ? String(report.userId) : "",
+      reviewId: report.reviewId ? String(report.reviewId) : "",
+    }).catch(() => undefined);
+  }
   await logAdminActivity(req, {
     action: `Updated report → ${report.status}${action !== "none" ? ` (${action})` : ""}`,
     target: `${report.subject} · ${report.reason}`,
@@ -320,7 +345,7 @@ export async function getActivityStats() {
       createdAt: { $gte: since30 },
     }),
     AdminActivity.countDocuments({
-      action: { $regex: /deactivat|removed|refund|force|delete/i },
+      action: { $regex: SENSITIVE_ACTION_PATTERN },
       createdAt: { $gte: since30 },
     }),
   ]);
@@ -334,7 +359,12 @@ export const activityQuerySchema = pageQuerySchema.extend({
 
 export async function listAdminActivity(query: z.infer<typeof activityQuerySchema>) {
   const filter: Record<string, unknown> = {};
-  if (query.section && query.section !== "all") filter.section = query.section;
+  if (query.section === "sensitive") {
+    filter.action = { $regex: SENSITIVE_ACTION_PATTERN };
+    filter.createdAt = { $gte: sensitiveWindowStart() };
+  } else if (query.section && query.section !== "all") {
+    filter.section = query.section;
+  }
   if (query.admin && query.admin !== "all") filter.adminEmail = query.admin.toLowerCase();
   if (query.q?.trim()) {
     const rx = new RegExp(query.q.trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
@@ -356,6 +386,7 @@ export async function listAdminActivity(query: z.infer<typeof activityQuerySchem
       section: a.section || "General",
       ip: maskIp(a.ip),
       time: relativeTime(a.createdAt as Date),
+      createdAt: a.createdAt ? new Date(a.createdAt as Date).toISOString() : null,
     })),
     admins: admins.map((a) => a.email),
     page: query.page,
@@ -397,6 +428,7 @@ export const campaignQuerySchema = pageQuerySchema.extend({
 });
 
 export async function listNotificationCampaigns(query: z.infer<typeof campaignQuerySchema>) {
+  await dispatchDueNotificationCampaigns();
   const filter: Record<string, unknown> = {};
   if (query.status && query.status !== "all") {
     const map: Record<string, string> = {
@@ -441,11 +473,9 @@ export async function listNotificationCampaigns(query: z.infer<typeof campaignQu
       audience: audienceLabel(c.audience),
       channel: channelLabel(c.channel),
       status: c.status === "sent" ? "Sent" : c.status === "scheduled" ? "Scheduled" : "Draft",
-      sentAt: c.sentAt
-        ? formatDate(c.sentAt) +
-          ", " +
-          c.sentAt.toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" })
-        : "—",
+      sentAt: c.sentAt ? new Date(c.sentAt).toISOString() : "—",
+      sentAtIso: c.sentAt ? new Date(c.sentAt).toISOString() : null,
+      scheduledAtIso: c.scheduledAt ? new Date(c.scheduledAt).toISOString() : null,
       opens: c.recipientCount > 0 ? `${Math.round((c.openCount / c.recipientCount) * 100)}%` : "—",
     })),
     page: query.page,
@@ -455,14 +485,19 @@ export async function listNotificationCampaigns(query: z.infer<typeof campaignQu
   };
 }
 
-export const createCampaignSchema = z.object({
-  title: z.string().min(1).max(200),
-  body: z.string().min(1).max(1000),
-  audience: z.enum(["all", "premium", "IN", "US", "CA"]).default("all"),
-  channel: z.enum(["push_inapp", "push", "inapp"]).default("push_inapp"),
-  status: z.enum(["draft", "scheduled", "sent"]).default("draft"),
-  scheduledAt: z.string().datetime().optional(),
-});
+export const createCampaignSchema = z
+  .object({
+    title: z.string().min(1).max(200),
+    body: z.string().min(1).max(1000),
+    audience: z.enum(["all", "premium", "IN", "US", "CA"]).default("all"),
+    channel: z.enum(["push_inapp", "push", "inapp"]).default("push_inapp"),
+    status: z.enum(["draft", "scheduled", "sent"]).default("draft"),
+    scheduledAt: z.string().datetime().optional(),
+  })
+  .superRefine((data, ctx) => {
+    const message = notificationScheduleIssue(data.status, data.scheduledAt);
+    if (message) ctx.addIssue({ code: "custom", message, path: ["scheduledAt"] });
+  });
 
 async function audienceFilter(audience: string) {
   const filter: Record<string, unknown> = { isActive: true };
@@ -508,10 +543,40 @@ async function deliverCampaign(campaign: InstanceType<typeof NotificationCampaig
   return sent;
 }
 
+/** Sends campaigns whose scheduled time has arrived. Claiming is atomic so overlapping ticks do not double-send. */
+export async function dispatchDueNotificationCampaigns(now = new Date()) {
+  let dispatched = 0;
+  for (;;) {
+    const claimed = await NotificationCampaign.findOneAndUpdate(
+      { status: "scheduled", scheduledAt: { $lte: now } },
+      { $set: { status: "sent", sentAt: now } },
+      { returnDocument: "after" },
+    );
+    if (!claimed) break;
+    try {
+      await deliverCampaign(claimed);
+      dispatched += 1;
+    } catch (err) {
+      await NotificationCampaign.updateOne(
+        { _id: claimed._id },
+        { $set: { status: "scheduled", recipientCount: 0 }, $unset: { sentAt: 1 } },
+      );
+      logger.error("Failed to send scheduled notification", {
+        id: claimed._id.toString(),
+        err: err instanceof Error ? err.message : String(err),
+      });
+      break;
+    }
+  }
+  return dispatched;
+}
+
 export async function createNotificationCampaign(
   req: Request,
   body: z.infer<typeof createCampaignSchema>,
 ) {
+  const scheduleIssue = notificationScheduleIssue(body.status, body.scheduledAt);
+  if (scheduleIssue) throw new AppError(400, scheduleIssue, "VALIDATION_ERROR");
   const doc = await NotificationCampaign.create({
     title: body.title,
     body: body.body,
@@ -748,22 +813,43 @@ export async function getAdminSettings(req: Request) {
   };
 }
 
-export const updatePasswordSchema = z.object({
-  currentPassword: z.string().min(1),
-  newPassword: z.string().min(8).max(128),
-});
+export const updatePasswordSchema = z
+  .object({
+    currentPassword: z.string().optional(),
+    newPassword: z.string().optional(),
+  })
+  .superRefine((data, ctx) => {
+    const message = adminPasswordUpdateMessage(data.currentPassword ?? "", data.newPassword ?? "");
+    if (message) ctx.addIssue({ code: "custom", message, path: ["newPassword"] });
+  })
+  .transform((data) => ({
+    currentPassword: (data.currentPassword ?? "").trim(),
+    newPassword: (data.newPassword ?? "").trim(),
+  }));
 
 export async function updateAdminPassword(
   req: Request,
   body: z.infer<typeof updatePasswordSchema>,
 ) {
+  const issue = adminPasswordUpdateMessage(body.currentPassword, body.newPassword);
+  if (issue) throw new AppError(400, issue, "VALIDATION_ERROR");
+  const currentPassword = body.currentPassword.trim();
+  const newPassword = body.newPassword.trim();
   const user = await User.findById(req.userId).select("+passwordHash email");
   if (!user?.passwordHash) {
     throw new AppError(400, "No password set on this account", "VALIDATION_ERROR");
   }
-  const ok = await argon2.verify(user.passwordHash, body.currentPassword);
+  const ok = await argon2.verify(user.passwordHash, currentPassword);
   if (!ok) throw new AppError(401, "Current password is incorrect", "INVALID_CREDENTIALS");
-  user.passwordHash = await argon2.hash(body.newPassword, { type: argon2.argon2id });
+  const unchanged = await argon2.verify(user.passwordHash, newPassword);
+  if (unchanged) {
+    throw new AppError(
+      400,
+      "New password must be different from the current password.",
+      "VALIDATION_ERROR",
+    );
+  }
+  user.passwordHash = await argon2.hash(newPassword, { type: argon2.argon2id });
   await user.save();
   await logAdminActivity(req, {
     action: "Changed password",

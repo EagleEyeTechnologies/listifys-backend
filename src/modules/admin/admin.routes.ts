@@ -371,7 +371,12 @@ adminRouter.post(
   asyncHandler(async (req, res) => {
     const parsed = createCampaignSchema.safeParse(req.body);
     if (!parsed.success) {
-      throw new AppError(400, "Invalid payload", "VALIDATION_ERROR", parsed.error.flatten());
+      throw new AppError(
+        400,
+        parsed.error.issues[0]?.message || "Invalid payload",
+        "VALIDATION_ERROR",
+        parsed.error.flatten(),
+      );
     }
     const data = await createNotificationCampaign(req, parsed.data);
     res.json({ success: true, data });
@@ -465,7 +470,12 @@ adminRouter.patch(
   asyncHandler(async (req, res) => {
     const parsed = updatePasswordSchema.safeParse(req.body);
     if (!parsed.success) {
-      throw new AppError(400, "Invalid payload", "VALIDATION_ERROR", parsed.error.flatten());
+      throw new AppError(
+        400,
+        parsed.error.issues[0]?.message || "Current password and new password are required.",
+        "VALIDATION_ERROR",
+        parsed.error.flatten(),
+      );
     }
     const data = await updateAdminPassword(req, parsed.data);
     res.json({ success: true, data });
