@@ -9,6 +9,10 @@ import { AppError } from "../../utils/AppError.js";
 import { absolutizeMediaUrl } from "../../utils/mediaUrl.js";
 import { displayEmail, formatPhoneDisplay, isSyntheticEmail } from "../../utils/phone.js";
 import { countOpenModerationReports } from "./admin.platform.service.js";
+import {
+  payoutProfileComplete,
+  serializePayoutProfile,
+} from "../event-tickets/eventPayout.service.js";
 
 function isOAuthVerified(providers?: Array<{ provider?: string }> | null): boolean {
   return Boolean(providers?.some((p) => p.provider === "google" || p.provider === "apple"));
@@ -87,7 +91,7 @@ function lastSeenFromDevices(devices?: Array<{ lastSeenAt?: Date | null }> | nul
   return latest;
 }
 
-export async function getAdminMe(userId: string) {
+export async function getAdminMe(userId: string, extras?: { role?: string; isOwner?: boolean }) {
   const user = await User.findById(userId).select("email name avatar countryCode isActive");
   if (!user) throw new AppError(404, "User not found", "NOT_FOUND");
   return {
@@ -96,6 +100,8 @@ export async function getAdminMe(userId: string) {
     name: user.name || "",
     avatar: user.avatar || "",
     countryCode: user.countryCode || "IN",
+    role: extras?.role || "moderator",
+    isOwner: Boolean(extras?.isOwner),
   };
 }
 
@@ -239,6 +245,71 @@ export async function patchAdminUser(id: string, body: z.infer<typeof patchAdmin
   };
 }
 
+export async function getAdminUser(id: string) {
+  if (!mongoose.isValidObjectId(id)) {
+    throw new AppError(400, "Invalid user id", "VALIDATION_ERROR");
+  }
+  const user = await User.findById(id).lean();
+  if (!user) throw new AppError(404, "User not found", "NOT_FOUND");
+
+  const uid = user._id.toString();
+  const [listingCount, address, recentListings] = await Promise.all([
+    Listing.countDocuments({ seller: user._id, status: { $ne: "removed" } }),
+    Address.findOne({ user: user._id }).sort({ isDefault: -1, updatedAt: -1 }).lean(),
+    Listing.find({ seller: user._id, status: { $ne: "removed" } })
+      .sort({ createdAt: -1 })
+      .limit(6)
+      .select("title price currency countryCode status images category createdAt")
+      .lean(),
+  ]);
+
+  const lastSeen = lastSeenFromDevices(user.devices as Array<{ lastSeenAt?: Date }> | undefined);
+  const emailRaw = user.email || "";
+  const location =
+    (address
+      ? formatAddressLabel(
+          address as {
+            label?: string;
+            city?: string;
+            formattedAddress?: string;
+          },
+        )
+      : "") ||
+    (user.location || "").trim() ||
+    "—";
+  const payoutProfile = serializePayoutProfile(user as InstanceType<typeof User>);
+
+  return {
+    id: uid,
+    name: user.name || "—",
+    email: displayEmail(emailRaw),
+    phone: formatPhoneDisplay(user.phoneCode, user.phone),
+    verified: isOAuthVerified(user.providers as Array<{ provider?: string }> | undefined),
+    premium: Boolean(user.sellerPremium?.isPremiumSeller),
+    market: (user.countryCode || "IN") as "IN" | "US" | "CA",
+    location,
+    listings: listingCount,
+    status: user.isActive ? ("Active" as const) : ("Inactive" as const),
+    isActive: Boolean(user.isActive),
+    joinedOn: formatDate(user.createdAt as Date | undefined),
+    lastActive: relativeTime(lastSeen),
+    avatar: initials(user.name || "", isSyntheticEmail(emailRaw) ? undefined : emailRaw),
+    avatarUrl: absolutizeMediaUrl(user.avatar),
+    bannerUrl: absolutizeMediaUrl(user.banner),
+    bio: user.bio || "",
+    payoutProfile,
+    payoutProfileComplete: payoutProfileComplete(payoutProfile),
+    recentListings: recentListings.map((l) => ({
+      id: l._id.toString(),
+      title: l.title,
+      category: l.category,
+      price: formatPrice(l.price, l.currency || "INR", l.countryCode || "IN"),
+      status: l.status,
+      thumb: Array.isArray(l.images) && l.images[0] ? absolutizeMediaUrl(l.images[0]) : "",
+    })),
+  };
+}
+
 export const adminListingsQuerySchema = z.object({
   q: z.string().optional(),
   category: z
@@ -259,7 +330,9 @@ export async function listAdminListings(query: z.infer<typeof adminListingsQuery
   const filter: Record<string, unknown> = {};
   if (query.category !== "all") filter.category = query.category;
   if (query.intent !== "all") filter.intent = query.intent;
-  if (query.status !== "all") filter.status = query.status;
+  // "all" matches the Total Listings card: every listing that has not been removed.
+  if (query.status === "all") filter.status = { $ne: "removed" };
+  else filter.status = query.status;
   if (query.market !== "all") filter.countryCode = query.market;
   if (query.q?.trim()) {
     const q = query.q.trim();
@@ -267,31 +340,65 @@ export async function listAdminListings(query: z.infer<typeof adminListingsQuery
     filter.$or = [{ title: rx }, { sellerName: rx }, { location: rx }, { city: rx }, { slug: rx }];
   }
 
+  const countFilter = { ...filter };
+  delete countFilter.category;
+
   const skip = (query.page - 1) * query.limit;
-  const [total, listings] = await Promise.all([
+  const [total, listings, categoryRows, allCount] = await Promise.all([
     Listing.countDocuments(filter),
     Listing.find(filter).sort({ createdAt: -1 }).skip(skip).limit(query.limit).lean(),
+    Listing.aggregate<{ _id: string; count: number }>([
+      { $match: countFilter },
+      { $group: { _id: "$category", count: { $sum: 1 } } },
+    ]),
+    Listing.countDocuments(countFilter),
   ]);
 
-  const items = listings.map((l) => ({
-    id: l._id.toString(),
-    code: `#${l._id.toString().slice(-6).toUpperCase()}`,
-    title: l.title,
-    category: l.category as CategorySlug,
-    intent: l.intent as "sale" | "wanted" | "free",
-    price: formatPrice(l.price, l.currency || "INR", l.countryCode || "IN"),
-    location: l.city || l.location || "—",
-    market: (l.countryCode || "IN") as "IN" | "US" | "CA",
-    postedBy: l.sellerName || "—",
-    postedByAvatar: initials(l.sellerName || "U"),
-    sellerId: l.seller?.toString?.() || String(l.seller),
-    status: l.status as "active" | "sold" | "paused" | "expired" | "removed",
-    boosted: Boolean(l.featured),
-    views: String(l.views || 0),
-    postedOn: relativeTime(l.createdAt as Date | undefined),
-    thumb: Array.isArray(l.images) && l.images[0] ? l.images[0] : "📦",
-    imageUrl: Array.isArray(l.images) && l.images[0] ? l.images[0] : "",
-  }));
+  const sellerIds = [
+    ...new Set(listings.map((l) => (l.seller ? l.seller.toString() : "")).filter(Boolean)),
+  ];
+  const sellers = sellerIds.length
+    ? await User.find({ _id: { $in: sellerIds } })
+        .select("name email avatar")
+        .lean()
+    : [];
+  const sellerMap = new Map(
+    sellers.map((s) => [
+      s._id.toString(),
+      {
+        name: s.name || "",
+        email: s.email || "",
+        avatarUrl: absolutizeMediaUrl(s.avatar),
+      },
+    ]),
+  );
+
+  const items = listings.map((l) => {
+    const sellerId = l.seller?.toString?.() || String(l.seller || "");
+    const seller = sellerMap.get(sellerId);
+    const firstImage =
+      Array.isArray(l.images) && l.images[0] ? absolutizeMediaUrl(l.images[0]) : "";
+    return {
+      id: l._id.toString(),
+      code: `#${l._id.toString().slice(-6).toUpperCase()}`,
+      title: l.title,
+      category: l.category as CategorySlug,
+      intent: l.intent as "sale" | "wanted" | "free",
+      price: formatPrice(l.price, l.currency || "INR", l.countryCode || "IN"),
+      location: l.city || l.location || "—",
+      market: (l.countryCode || "IN") as "IN" | "US" | "CA",
+      postedBy: l.sellerName || seller?.name || "—",
+      postedByAvatar: initials(l.sellerName || seller?.name || "U", seller?.email),
+      postedByAvatarUrl: seller?.avatarUrl || "",
+      sellerId,
+      status: l.status as "active" | "sold" | "paused" | "expired" | "removed",
+      boosted: Boolean(l.featured),
+      views: String(l.views || 0),
+      postedOn: relativeTime(l.createdAt as Date | undefined),
+      thumb: firstImage,
+      imageUrl: firstImage,
+    };
+  });
 
   return {
     items,
@@ -299,6 +406,11 @@ export async function listAdminListings(query: z.infer<typeof adminListingsQuery
     limit: query.limit,
     total,
     totalPages: Math.max(1, Math.ceil(total / query.limit)),
+    allCount,
+    categoryCounts: categoryRows.map((row) => ({
+      slug: String(row._id || ""),
+      count: row.count,
+    })),
   };
 }
 
@@ -344,6 +456,7 @@ export async function getAdminListing(id: string) {
     featured: Boolean(listing.featured),
     images: Array.isArray(listing.images) ? listing.images.map((u) => absolutizeMediaUrl(u)) : [],
     sellerName: listing.sellerName || "",
+    sellerId: listing.seller?.toString?.() || String(listing.seller || ""),
     postedOn: formatDate(listing.createdAt as Date | undefined),
   };
 }
@@ -394,9 +507,33 @@ export async function softDeleteAdminListing(id: string) {
   return patchAdminListing(id, { status: "removed" });
 }
 
-export async function getAdminStats() {
+export const adminStatsQuerySchema = z.object({
+  purposeDays: z.enum(["7", "30", "90", "all"]).optional().default("30"),
+});
+
+function moneyInrLabel(minor: number) {
+  if (minor <= 0) return "₹0";
+  return `₹${(minor / 100).toLocaleString("en-IN", { maximumFractionDigits: 0 })}`;
+}
+
+export async function getAdminStats(
+  query: z.infer<typeof adminStatsQuerySchema> = { purposeDays: "30" },
+) {
   const since30 = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
   const since7 = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+  const purposeDays = query.purposeDays ?? "30";
+  const purposeSince =
+    purposeDays === "all" ? null : new Date(Date.now() - Number(purposeDays) * 24 * 60 * 60 * 1000);
+  const purposeMatch: Record<string, unknown> = { status: "succeeded" };
+  if (purposeSince) purposeMatch.createdAt = { $gte: purposeSince };
+  const purposeRangeLabel =
+    purposeDays === "all"
+      ? "All time"
+      : purposeDays === "7"
+        ? "7 days"
+        : purposeDays === "90"
+          ? "90 days"
+          : "30 days";
 
   const [
     totalUsers,
@@ -435,7 +572,7 @@ export async function getAdminStats() {
       { $group: { _id: null, total: { $sum: "$totalMinor" } } },
     ]).catch(() => [] as { total: number }[]),
     Payment.aggregate<{ _id: string; total: number }>([
-      { $match: { status: "succeeded", createdAt: { $gte: since30 } } },
+      { $match: purposeMatch },
       { $group: { _id: "$purpose", total: { $sum: "$totalMinor" } } },
     ]).catch(() => [] as { _id: string; total: number }[]),
     Payment.aggregate<{ _id: { y: number; m: number }; total: number }>([
@@ -528,13 +665,11 @@ export async function getAdminStats() {
     expiredListings,
     boostedListings,
     openReports,
-    monetization30d:
-      monetizationMinor > 0
-        ? `₹${(monetizationMinor / 100).toLocaleString("en-IN", {
-            maximumFractionDigits: 0,
-          })}`
-        : "₹0",
+    monetization30d: moneyInrLabel(monetizationMinor),
     monetizationMinor,
+    purposeRange: purposeDays,
+    purposeRangeLabel,
+    purposeTotalLabel: moneyInrLabel(purposeTotal),
     paymentsByPurpose: [
       {
         name: "Boost",
@@ -673,15 +808,26 @@ export async function listAdminPayments(
         avatar?: string;
         _id?: { toString(): string };
       } | null;
+      const userId = user?._id?.toString?.() || (p.userId ? String(p.userId) : "");
       return {
         id: p._id.toString(),
         user: user?.name || user?.email || "—",
+        userId,
         avatar: initials(user?.name || "", user?.email),
+        avatarUrl: absolutizeMediaUrl(user?.avatar),
         purpose: p.purpose,
         related: p.planKey || "—",
+        listingId: p.listingId ? String(p.listingId) : "",
+        eventBookingId: p.eventBookingId ? String(p.eventBookingId) : "",
+        campaignId: p.campaignId ? String(p.campaignId) : "",
+        subscriptionId: p.subscriptionId ? String(p.subscriptionId) : "",
         amount: moneyLabel(p.totalMinor, p.currency),
+        amountMinor: p.totalMinor,
+        currency: p.currency || "INR",
         provider: String(p.provider || "").replace(/^\w/, (c) => c.toUpperCase()),
         method: p.providerOrderId ? "Online" : "—",
+        providerOrderId: p.providerOrderId || "",
+        providerPaymentId: p.providerPaymentId || "",
         status:
           p.status === "succeeded"
             ? "Successful"
@@ -692,6 +838,7 @@ export async function listAdminPayments(
                 : p.status === "refunded"
                   ? "Refunded"
                   : String(p.status),
+        rawStatus: p.status,
         datetime:
           formatDate(p.createdAt as Date) +
           (p.createdAt
@@ -714,6 +861,108 @@ export async function listAdminPayments(
       ),
     },
   };
+}
+
+function mapPaymentRow(p: {
+  _id: { toString(): string };
+  userId?: unknown;
+  purpose?: string;
+  planKey?: string;
+  listingId?: unknown;
+  eventBookingId?: unknown;
+  campaignId?: unknown;
+  subscriptionId?: unknown;
+  totalMinor: number;
+  currency?: string;
+  provider?: string;
+  providerOrderId?: string;
+  providerPaymentId?: string;
+  status?: string;
+  createdAt?: Date;
+}) {
+  const user = p.userId as {
+    name?: string;
+    email?: string;
+    avatar?: string;
+    _id?: { toString(): string };
+  } | null;
+  return {
+    id: p._id.toString(),
+    user: user?.name || user?.email || "—",
+    userId: user?._id?.toString?.() || (p.userId ? String(p.userId) : ""),
+    avatar: initials(user?.name || "", user?.email),
+    avatarUrl: absolutizeMediaUrl(user?.avatar),
+    purpose: p.purpose || "",
+    related: p.planKey || "—",
+    listingId: p.listingId ? String(p.listingId) : "",
+    eventBookingId: p.eventBookingId ? String(p.eventBookingId) : "",
+    campaignId: p.campaignId ? String(p.campaignId) : "",
+    subscriptionId: p.subscriptionId ? String(p.subscriptionId) : "",
+    amount: moneyLabel(p.totalMinor, p.currency),
+    amountMinor: p.totalMinor,
+    currency: p.currency || "INR",
+    provider: String(p.provider || "").replace(/^\w/, (c) => c.toUpperCase()),
+    method: p.providerOrderId ? "Online" : "—",
+    providerOrderId: p.providerOrderId || "",
+    providerPaymentId: p.providerPaymentId || "",
+    status:
+      p.status === "succeeded"
+        ? "Successful"
+        : p.status === "pending"
+          ? "Pending"
+          : p.status === "failed"
+            ? "Failed"
+            : p.status === "refunded"
+              ? "Refunded"
+              : String(p.status),
+    rawStatus: p.status || "",
+    datetime:
+      formatDate(p.createdAt as Date) +
+      (p.createdAt
+        ? `, ${(p.createdAt as Date).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" })}`
+        : ""),
+  };
+}
+
+export async function getAdminPayment(id: string) {
+  if (!mongoose.isValidObjectId(id)) {
+    throw new AppError(400, "Invalid payment id", "VALIDATION_ERROR");
+  }
+  const p = await Payment.findById(id).populate("userId", "name email avatar").lean();
+  if (!p) throw new AppError(404, "Payment not found", "NOT_FOUND");
+  return mapPaymentRow(p as Parameters<typeof mapPaymentRow>[0]);
+}
+
+export async function refundAdminPayment(id: string) {
+  if (!mongoose.isValidObjectId(id)) {
+    throw new AppError(400, "Invalid payment id", "VALIDATION_ERROR");
+  }
+  const payment = await Payment.findById(id);
+  if (!payment) throw new AppError(404, "Payment not found", "NOT_FOUND");
+  if (payment.status === "refunded") {
+    return getAdminPayment(id);
+  }
+  if (payment.status !== "succeeded") {
+    throw new AppError(400, "Only successful payments can be refunded", "VALIDATION_ERROR");
+  }
+  if (payment.provider === "mock") {
+    payment.status = "refunded";
+    payment.refundedAt = new Date();
+    await payment.save();
+  } else {
+    const { refundProviderPayment } = await import("../payments/payments.service.js");
+    await refundProviderPayment({
+      provider: String(payment.provider || ""),
+      providerPaymentId: payment.providerPaymentId || "",
+      amountMinor: payment.totalMinor,
+    });
+    payment.status = "refunded";
+    payment.refundedAt = new Date();
+    await payment.save();
+  }
+  const { refundForPayment } = await import("../payments/activatePayment.js");
+  await refundForPayment(payment._id.toString());
+  return getAdminPayment(id);
 }
 
 export async function listAdminBoosts(query: z.infer<typeof pageQuerySchema>) {
@@ -757,11 +1006,18 @@ export async function listAdminBoosts(query: z.infer<typeof pageQuerySchema>) {
 
   return {
     items: rows.map((b) => {
-      const user = b.userId as { name?: string; email?: string } | null;
+      const user = b.userId as {
+        name?: string;
+        email?: string;
+        _id?: { toString(): string };
+      } | null;
       return {
         id: b._id.toString(),
         listing: b.listingTitle || String(b.listingId),
+        listingId: b.listingId ? String(b.listingId) : "",
+        paymentId: b.paymentId ? String(b.paymentId) : "",
         seller: user?.name || user?.email || "—",
+        sellerId: user?._id?.toString?.() || (b.userId ? String(b.userId) : ""),
         plan: `${b.planDays}-day ${b.planKey}`,
         status:
           b.status === "active"
@@ -819,11 +1075,19 @@ export async function listAdminPremium(query: z.infer<typeof pageQuerySchema>) {
 
   return {
     items: rows.map((s) => {
-      const user = s.userId as { name?: string; email?: string; avatar?: string } | null;
+      const user = s.userId as {
+        name?: string;
+        email?: string;
+        avatar?: string;
+        _id?: { toString(): string };
+      } | null;
       return {
         id: s._id.toString(),
         seller: user?.name || user?.email || "—",
+        sellerId: user?._id?.toString?.() || (s.userId ? String(s.userId) : ""),
         avatar: initials(user?.name || "", user?.email),
+        avatarUrl: absolutizeMediaUrl(user?.avatar),
+        paymentId: s.paymentId ? String(s.paymentId) : "",
         plan: s.planKey || "Monthly",
         status:
           s.status === "active"
@@ -864,8 +1128,30 @@ export async function listAdminEventBookings(query: z.infer<typeof pageQuerySche
     filter.status = map[query.status] || query.status.toLowerCase();
   }
   if (query.q?.trim()) {
-    const rx = new RegExp(query.q.trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
-    filter.$or = [{ eventTitle: rx }, { attendeeName: rx }, { attendeePhone: rx }];
+    const raw = query.q.trim();
+    const rx = new RegExp(raw.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
+    const or: Record<string, unknown>[] = [
+      { eventTitle: rx },
+      { attendeeName: rx },
+      { attendeePhone: rx },
+      { ticketCode: rx },
+      { ticketTierName: rx },
+    ];
+    if (mongoose.isValidObjectId(raw)) {
+      const oid = new mongoose.Types.ObjectId(raw);
+      or.push({ _id: oid }, { listingId: oid }, { paymentId: oid }, { userId: oid });
+    } else if (/^[a-f0-9]{6,}$/i.test(raw)) {
+      or.push({
+        $expr: {
+          $regexMatch: {
+            input: { $toString: "$_id" },
+            regex: raw,
+            options: "i",
+          },
+        },
+      });
+    }
+    filter.$or = or;
   }
   const skip = (query.page - 1) * query.limit;
   const since30 = new Date(Date.now() - 30 * 86400000);
@@ -891,13 +1177,22 @@ export async function listAdminEventBookings(query: z.infer<typeof pageQuerySche
 
   return {
     items: rows.map((b) => {
-      const user = b.userId as { name?: string; email?: string; avatar?: string } | null;
+      const user = b.userId as {
+        name?: string;
+        email?: string;
+        avatar?: string;
+        _id?: { toString(): string };
+      } | null;
       const sym = b.currencySymbol || (b.currency === "INR" ? "₹" : "$");
       return {
         id: b._id.toString(),
         event: b.eventTitle || "Event",
+        listingId: b.listingId ? String(b.listingId) : "",
+        paymentId: b.paymentId ? String(b.paymentId) : "",
+        userId: user?._id?.toString?.() || (b.userId ? String(b.userId) : ""),
         attendee: b.attendeeName || user?.name || user?.email || "—",
         avatar: initials(b.attendeeName || user?.name || "", user?.email),
+        avatarUrl: absolutizeMediaUrl(user?.avatar),
         tickets: b.ticketQuantity,
         amount: `${sym}${Number(b.totalAmount).toLocaleString()}`,
         status:
@@ -967,13 +1262,25 @@ export async function listAdminReviews(
 
   return {
     items: rows.map((r) => {
-      const reviewer = r.reviewer as { name?: string; email?: string } | null;
-      const seller = r.seller as { name?: string; email?: string } | null;
+      const reviewer = r.reviewer as {
+        name?: string;
+        email?: string;
+        avatar?: string;
+        _id?: { toString(): string };
+      } | null;
+      const seller = r.seller as {
+        name?: string;
+        email?: string;
+        _id?: { toString(): string };
+      } | null;
       return {
         id: r._id.toString(),
         reviewer: reviewer?.name || reviewer?.email || "—",
+        reviewerId: reviewer?._id?.toString?.() || "",
         avatar: initials(reviewer?.name || "", reviewer?.email),
+        avatarUrl: absolutizeMediaUrl(reviewer?.avatar),
         seller: seller?.name || seller?.email || "—",
+        sellerId: seller?._id?.toString?.() || (r.seller ? String(r.seller) : ""),
         rating: r.rating,
         comment: r.comment,
         date: formatDate(r.createdAt as Date | undefined),
@@ -1021,88 +1328,4 @@ export async function patchAdminReview(id: string, body: z.infer<typeof patchAdm
   }
 
   return { id: review._id.toString(), status: review.status };
-}
-
-export async function listAdminConversations(query: z.infer<typeof pageQuerySchema>) {
-  const { Conversation } = await import("../chat/conversation.model.js");
-  const { Message } = await import("../chat/message.model.js");
-  const filter: Record<string, unknown> = {};
-  if (query.q?.trim()) {
-    const rx = new RegExp(query.q.trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
-    filter.$or = [{ listingTitle: rx }, { lastMessageText: rx }];
-  }
-  const skip = (query.page - 1) * query.limit;
-  const [total, rows] = await Promise.all([
-    Conversation.countDocuments(filter),
-    Conversation.find(filter)
-      .sort({ lastMessageAt: -1, updatedAt: -1 })
-      .skip(skip)
-      .limit(query.limit)
-      .populate("participants", "name email avatar")
-      .lean(),
-  ]);
-
-  const items = await Promise.all(
-    rows.map(async (c) => {
-      const parts = (c.participants || []) as Array<{
-        _id: { toString(): string };
-        name?: string;
-        email?: string;
-        avatar?: string;
-      }>;
-      const buyer = parts[0];
-      const seller = parts[1] || parts[0];
-      const msgCount = await Message.countDocuments({ conversation: c._id });
-      return {
-        id: c._id.toString(),
-        listing: c.listingTitle || "Conversation",
-        buyer: buyer?.name || buyer?.email || "User A",
-        seller: seller?.name || seller?.email || "User B",
-        buyerAvatar: initials(buyer?.name || "", buyer?.email),
-        sellerAvatar: initials(seller?.name || "", seller?.email),
-        lastMessage: c.lastMessageText || "—",
-        messages: msgCount,
-        updated: relativeTime((c.lastMessageAt as Date) || (c.updatedAt as Date)),
-        flagged: false,
-      };
-    }),
-  );
-
-  return {
-    items,
-    page: query.page,
-    limit: query.limit,
-    total,
-    totalPages: Math.max(1, Math.ceil(total / query.limit)),
-  };
-}
-
-export async function getAdminConversationMessages(id: string) {
-  const { Conversation } = await import("../chat/conversation.model.js");
-  const { Message } = await import("../chat/message.model.js");
-  if (!mongoose.isValidObjectId(id)) throw new AppError(400, "Invalid id", "VALIDATION_ERROR");
-  const convo = await Conversation.findById(id)
-    .populate("participants", "name email avatar")
-    .lean();
-  if (!convo) throw new AppError(404, "Conversation not found", "NOT_FOUND");
-  const messages = await Message.find({ conversation: id })
-    .sort({ createdAt: 1 })
-    .limit(100)
-    .populate("sender", "name email")
-    .lean();
-  return {
-    conversation: {
-      id: convo._id.toString(),
-      listing: convo.listingTitle || "Conversation",
-    },
-    messages: messages.map((m) => {
-      const sender = m.sender as { name?: string; email?: string } | null;
-      return {
-        id: m._id.toString(),
-        text: m.text || "",
-        sender: sender?.name || sender?.email || "User",
-        createdAt: relativeTime(m.createdAt as Date | undefined),
-      };
-    }),
-  };
 }

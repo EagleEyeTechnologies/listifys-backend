@@ -7,7 +7,20 @@ import { initQueues } from "./queues/listingQueue.js";
 import { initSocket } from "./modules/chat/socket.js";
 import { initFcm, fcmReady } from "./modules/notifications/fcm.service.js";
 import { logger } from "./utils/logger.js";
+import { dispatchDueNotificationCampaigns } from "./modules/admin/admin.platform.service.js";
 import http from "http";
+
+function startNotificationScheduler() {
+  const tick = () => {
+    void dispatchDueNotificationCampaigns().catch((err) => {
+      logger.error("Failed to send scheduled notifications", {
+        err: err instanceof Error ? err.message : String(err),
+      });
+    });
+  };
+  tick();
+  setInterval(tick, 60_000);
+}
 
 async function main() {
   await connectMongo();
@@ -15,6 +28,7 @@ async function main() {
   initQueues();
   await connectSearch();
   initFcm();
+  startNotificationScheduler();
 
   const app = createApp();
   const server = http.createServer(app);

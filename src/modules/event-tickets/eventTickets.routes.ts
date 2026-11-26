@@ -19,6 +19,11 @@ import {
   serializeBooking,
 } from "./eventTickets.service.js";
 import {
+  getOrganizerEarnings,
+  getOrganizerPayoutForListing,
+  updateOrganizerPayoutProfile,
+} from "./eventPayout.service.js";
+import {
   createRazorpayOrder,
   createStripePaymentIntent,
   paymentConfigFor,
@@ -148,6 +153,54 @@ eventTicketsRouter.get(
   requireAuth,
   asyncHandler(async (req, res) => {
     const data = await getOrganizerBookings(String(req.params.listingId), String(req.userId));
+    res.json({ success: true, data });
+  }),
+);
+
+eventTicketsRouter.get(
+  "/organizer/earnings",
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const data = await getOrganizerEarnings(String(req.userId));
+    res.json({ success: true, data });
+  }),
+);
+
+eventTicketsRouter.get(
+  "/organizer/earnings/:listingId",
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const data = await getOrganizerPayoutForListing(
+      String(req.params.listingId),
+      String(req.userId),
+    );
+    res.json({ success: true, data });
+  }),
+);
+
+const payoutProfileSchema = z.discriminatedUnion("method", [
+  z.object({
+    method: z.literal("upi"),
+    accountHolderName: z.string().min(2).max(120),
+    upiId: z.string().min(3).max(120),
+  }),
+  z.object({
+    method: z.literal("bank"),
+    accountHolderName: z.string().min(2).max(120),
+    accountNumber: z.string().min(6).max(20),
+    ifsc: z.string().min(4).max(20),
+  }),
+]);
+
+eventTicketsRouter.put(
+  "/organizer/payout-profile",
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const parsed = payoutProfileSchema.safeParse(req.body);
+    if (!parsed.success) {
+      throw new AppError(400, "Invalid payout details", "VALIDATION_ERROR", parsed.error.flatten());
+    }
+    const data = await updateOrganizerPayoutProfile(String(req.userId), parsed.data);
     res.json({ success: true, data });
   }),
 );
