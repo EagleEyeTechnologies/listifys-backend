@@ -16,6 +16,10 @@ import {
 } from "../../utils/phone.js";
 import { socialLinkError, type SocialField } from "../../utils/socialLinks.js";
 import { personNameSchema } from "../../utils/personName.js";
+import {
+  payoutProfileComplete,
+  serializePayoutProfile,
+} from "../event-tickets/eventPayout.service.js";
 
 function socialUrlField(field: SocialField, max: number) {
   return z
@@ -103,6 +107,8 @@ export function toMeUser(user: InstanceType<typeof User>) {
     followersCount: idsOf(user.followers).length,
     followingCount: idsOf(user.following).length,
     premium: publicPremiumStatus(user),
+    payoutProfile: serializePayoutProfile(user),
+    payoutProfileComplete: payoutProfileComplete(serializePayoutProfile(user)),
     scheduledDeletionAt: user.scheduledDeletionAt
       ? new Date(user.scheduledDeletionAt).toISOString()
       : null,

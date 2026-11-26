@@ -113,6 +113,8 @@ const envSchema = z.object({
   STRIPE_SECRET_KEY: z.string().optional(),
   STRIPE_PUBLISHABLE_KEY: z.string().optional(),
   STRIPE_WEBHOOK_SECRET: z.string().optional(),
+  /** Platform cut of event ticket net sales (0–100). Default 10. */
+  EVENT_TICKET_PLATFORM_FEE_PERCENT: z.coerce.number().min(0).max(100).default(10),
 });
 
 export type Env = z.infer<typeof envSchema>;

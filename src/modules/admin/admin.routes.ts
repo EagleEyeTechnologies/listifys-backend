@@ -9,6 +9,7 @@ import {
   getAdminListing,
   getAdminMe,
   getAdminPayment,
+  adminStatsQuerySchema,
   getAdminStats,
   getAdminUser,
   refundAdminPayment,
@@ -75,8 +76,12 @@ adminRouter.get(
 
 adminRouter.get(
   "/stats",
-  asyncHandler(async (_req, res) => {
-    const data = await getAdminStats();
+  asyncHandler(async (req, res) => {
+    const parsed = adminStatsQuerySchema.safeParse(req.query);
+    if (!parsed.success) {
+      throw new AppError(400, "Invalid query", "VALIDATION_ERROR", parsed.error.flatten());
+    }
+    const data = await getAdminStats(parsed.data);
     res.json({ success: true, data });
   }),
 );
@@ -203,6 +208,52 @@ adminRouter.post(
       action: "Refunded payment",
       target: id,
       section: "Payments",
+    });
+    res.json({ success: true, data });
+  }),
+);
+
+const eventPayoutsQuerySchema = pageQuerySchema.extend({
+  status: z.string().optional().default("all"),
+});
+
+adminRouter.get(
+  "/event-payouts",
+  asyncHandler(async (req, res) => {
+    const parsed = eventPayoutsQuerySchema.safeParse(req.query);
+    if (!parsed.success) {
+      throw new AppError(400, "Invalid query", "VALIDATION_ERROR", parsed.error.flatten());
+    }
+    const { listAdminEventPayouts } = await import("../event-tickets/eventPayout.service.js");
+    const data = await listAdminEventPayouts(parsed.data);
+    res.json({ success: true, data });
+  }),
+);
+
+adminRouter.post(
+  "/event-payouts/:id/mark-paid",
+  asyncHandler(async (req, res) => {
+    const body = z
+      .object({
+        reference: z.string().max(200).optional(),
+        notes: z.string().max(1000).optional(),
+      })
+      .safeParse(req.body || {});
+    if (!body.success) {
+      throw new AppError(400, "Invalid payload", "VALIDATION_ERROR", body.error.flatten());
+    }
+    const { markOrganizerPayoutPaid } = await import("../event-tickets/eventPayout.service.js");
+    const id = String(req.params.id);
+    const data = await markOrganizerPayoutPaid({
+      payoutId: id,
+      adminUserId: req.userId,
+      reference: body.data.reference,
+      notes: body.data.notes,
+    });
+    void logAdminActivity(req, {
+      action: "Marked organizer payout paid",
+      target: id,
+      section: "Event payouts",
     });
     res.json({ success: true, data });
   }),

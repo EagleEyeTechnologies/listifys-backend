@@ -88,6 +88,15 @@ const userSchema = new Schema(
       subscriptionId: { type: Schema.Types.ObjectId, ref: "SellerSubscription" },
       provider: { type: String, default: "" },
     },
+    /** Bank/UPI details for event ticket organizer payouts (manual settlement). */
+    payoutProfile: {
+      method: { type: String, enum: ["", "bank", "upi"], default: "" },
+      accountHolderName: { type: String, trim: true, default: "" },
+      accountNumber: { type: String, trim: true, default: "" },
+      ifsc: { type: String, trim: true, uppercase: true, default: "" },
+      upiId: { type: String, trim: true, lowercase: true, default: "" },
+      updatedAt: { type: Date, default: null },
+    },
   },
   { timestamps: true },
 );

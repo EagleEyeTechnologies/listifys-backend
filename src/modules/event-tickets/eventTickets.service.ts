@@ -23,6 +23,11 @@ import {
   refundPolicyFromExtras,
   type RefundPolicy,
 } from "./refundPolicy.js";
+import {
+  getOrganizerPayoutForListing,
+  splitTicketAmount,
+  syncOrganizerPayoutForListing,
+} from "./eventPayout.service.js";
 
 type BookingDoc = InstanceType<typeof EventBooking>;
 type ListingDoc = InstanceType<typeof Listing>;
@@ -416,7 +421,33 @@ export async function activateEventBookingFromPayment(paymentId: string) {
     throw new AppError(404, "Event listing not found", "NOT_FOUND");
   }
 
+  const grossMinor = payment.totalMinor || toMinorUnits(Number(booking.totalAmount || 0));
+  const split = splitTicketAmount(grossMinor);
+  const prevMeta =
+    booking.metadata && typeof booking.metadata === "object"
+      ? (booking.metadata as Record<string, unknown>)
+      : {};
+  booking.metadata = {
+    ...prevMeta,
+    grossMinor: split.grossMinor,
+    feeMinor: split.feeMinor,
+    organizerMinor: split.organizerMinor,
+    feePercent: split.feePercent,
+  };
+  await booking.save();
+  payment.metadata = {
+    ...(payment.metadata && typeof payment.metadata === "object"
+      ? (payment.metadata as Record<string, unknown>)
+      : {}),
+    grossMinor: split.grossMinor,
+    feeMinor: split.feeMinor,
+    organizerMinor: split.organizerMinor,
+    feePercent: split.feePercent,
+  };
+  await payment.save();
+
   await confirmBooking(booking, listing);
+  void syncOrganizerPayoutForListing(booking.listingId.toString()).catch(() => undefined);
   return { payment, booking, already: false as const };
 }
 
@@ -437,8 +468,16 @@ export async function markEventTicketRefunded(paymentId: string) {
   booking.status = "refunded";
   booking.refundedAt = new Date();
   booking.cancelledAt = booking.cancelledAt || new Date();
+  const prevMeta =
+    booking.metadata && typeof booking.metadata === "object"
+      ? (booking.metadata as Record<string, unknown>)
+      : {};
+  if (typeof prevMeta.refundAmount !== "number") {
+    booking.metadata = { ...prevMeta, refundAmount: Number(booking.totalAmount || 0) };
+  }
   await booking.save();
   await syncEventInventory(booking.listingId);
+  void syncOrganizerPayoutForListing(booking.listingId.toString()).catch(() => undefined);
 }
 
 /** Drop unpaid checkouts so closing Razorpay does not leave Pending Payment rows. */
@@ -572,7 +611,8 @@ export async function getOrganizerBookings(listingId: string, userId: string) {
       left: t.left,
     })),
   };
-  return { items, summary };
+  const payout = await getOrganizerPayoutForListing(listingId, userId).catch(() => null);
+  return { items, summary, payout };
 }
 
 export async function requestBookingWithdrawal(input: {
@@ -728,6 +768,7 @@ async function cancelUnderPolicy(
   });
   await claimed.save();
   await syncEventInventory(claimed.listingId);
+  void syncOrganizerPayoutForListing(claimed.listingId.toString()).catch(() => undefined);
 
   const title = listing?.title || claimed.eventTitle || "the event";
   const label = ticketLabel(claimed.ticketQuantity, claimed.ticketTierName || undefined);
@@ -827,9 +868,13 @@ export async function organizerCancelBooking(input: {
   booking.cancelledBy = "organizer";
   booking.cancelledAt = new Date();
   if (paid) booking.refundedAt = new Date();
-  withMetadata(booking, { cancelReason: String(input.reason || "").trim() });
+  withMetadata(booking, {
+    cancelReason: String(input.reason || "").trim(),
+    ...(paid ? { refundAmount: Number(booking.totalAmount || 0) } : {}),
+  });
   await booking.save();
   await syncEventInventory(booking.listingId);
+  void syncOrganizerPayoutForListing(booking.listingId.toString()).catch(() => undefined);
   const reason = String(input.reason || "").trim();
   await notifyAttendee(
     booking,
@@ -857,8 +902,13 @@ export async function organizerResolveWithdrawal(input: {
     booking.status = "refunded";
     booking.refundedAt = new Date();
     booking.cancelledBy = "attendee";
-    withMetadata(booking, { withdrawResolvedAt: new Date().toISOString(), withdrawNote: note });
+    withMetadata(booking, {
+      withdrawResolvedAt: new Date().toISOString(),
+      withdrawNote: note,
+      refundAmount: Number(booking.totalAmount || 0),
+    });
     await booking.save();
+    void syncOrganizerPayoutForListing(booking.listingId.toString()).catch(() => undefined);
     await notifyAttendee(
       booking,
       "Refund approved",

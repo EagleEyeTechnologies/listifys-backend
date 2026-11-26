@@ -9,6 +9,10 @@ import { AppError } from "../../utils/AppError.js";
 import { absolutizeMediaUrl } from "../../utils/mediaUrl.js";
 import { displayEmail, formatPhoneDisplay, isSyntheticEmail } from "../../utils/phone.js";
 import { countOpenModerationReports } from "./admin.platform.service.js";
+import {
+  payoutProfileComplete,
+  serializePayoutProfile,
+} from "../event-tickets/eventPayout.service.js";
 
 function isOAuthVerified(providers?: Array<{ provider?: string }> | null): boolean {
   return Boolean(providers?.some((p) => p.provider === "google" || p.provider === "apple"));
@@ -273,6 +277,7 @@ export async function getAdminUser(id: string) {
       : "") ||
     (user.location || "").trim() ||
     "—";
+  const payoutProfile = serializePayoutProfile(user as InstanceType<typeof User>);
 
   return {
     id: uid,
@@ -292,6 +297,8 @@ export async function getAdminUser(id: string) {
     avatarUrl: absolutizeMediaUrl(user.avatar),
     bannerUrl: absolutizeMediaUrl(user.banner),
     bio: user.bio || "",
+    payoutProfile,
+    payoutProfileComplete: payoutProfileComplete(payoutProfile),
     recentListings: recentListings.map((l) => ({
       id: l._id.toString(),
       title: l.title,
@@ -500,9 +507,33 @@ export async function softDeleteAdminListing(id: string) {
   return patchAdminListing(id, { status: "removed" });
 }
 
-export async function getAdminStats() {
+export const adminStatsQuerySchema = z.object({
+  purposeDays: z.enum(["7", "30", "90", "all"]).optional().default("30"),
+});
+
+function moneyInrLabel(minor: number) {
+  if (minor <= 0) return "₹0";
+  return `₹${(minor / 100).toLocaleString("en-IN", { maximumFractionDigits: 0 })}`;
+}
+
+export async function getAdminStats(
+  query: z.infer<typeof adminStatsQuerySchema> = { purposeDays: "30" },
+) {
   const since30 = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
   const since7 = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+  const purposeDays = query.purposeDays ?? "30";
+  const purposeSince =
+    purposeDays === "all" ? null : new Date(Date.now() - Number(purposeDays) * 24 * 60 * 60 * 1000);
+  const purposeMatch: Record<string, unknown> = { status: "succeeded" };
+  if (purposeSince) purposeMatch.createdAt = { $gte: purposeSince };
+  const purposeRangeLabel =
+    purposeDays === "all"
+      ? "All time"
+      : purposeDays === "7"
+        ? "7 days"
+        : purposeDays === "90"
+          ? "90 days"
+          : "30 days";
 
   const [
     totalUsers,
@@ -541,7 +572,7 @@ export async function getAdminStats() {
       { $group: { _id: null, total: { $sum: "$totalMinor" } } },
     ]).catch(() => [] as { total: number }[]),
     Payment.aggregate<{ _id: string; total: number }>([
-      { $match: { status: "succeeded", createdAt: { $gte: since30 } } },
+      { $match: purposeMatch },
       { $group: { _id: "$purpose", total: { $sum: "$totalMinor" } } },
     ]).catch(() => [] as { _id: string; total: number }[]),
     Payment.aggregate<{ _id: { y: number; m: number }; total: number }>([
@@ -634,13 +665,11 @@ export async function getAdminStats() {
     expiredListings,
     boostedListings,
     openReports,
-    monetization30d:
-      monetizationMinor > 0
-        ? `₹${(monetizationMinor / 100).toLocaleString("en-IN", {
-            maximumFractionDigits: 0,
-          })}`
-        : "₹0",
+    monetization30d: moneyInrLabel(monetizationMinor),
     monetizationMinor,
+    purposeRange: purposeDays,
+    purposeRangeLabel,
+    purposeTotalLabel: moneyInrLabel(purposeTotal),
     paymentsByPurpose: [
       {
         name: "Boost",
